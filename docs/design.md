@@ -8,8 +8,9 @@ broadcast ends. The source emitted by yt-dlp is newline-delimited JSON actions
 (JSONL/NDJSON), despite its `.json` filename suffix.
 
 The recorded-chat implementation provides a bounded worker for ended
-livestreams. Active-broadcast capture and synchronized playback remain later
-milestones.
+livestreams plus a native-card availability indicator and paginated video-detail
+message viewer. Active-broadcast capture, synchronized playback, and chat search
+remain later milestones.
 
 ## Ownership boundary
 
@@ -79,6 +80,12 @@ and normalized action rows containing offsets, action and renderer types,
 message/author fields, and the preserved raw action payload. Repeating an
 identical download reuses the source hash and does not duplicate actions or
 statistics.
+
+The browser integration is plugin-owned. It uses YT Library's generic
+`entityCards` and `videoDetail` contracts, queries at most 500 video identities
+per availability request, and retrieves at most 500 user messages per page.
+Timestamp links open the source video at the recorded offset; they are not an
+embedded-player synchronization contract.
 
 ## First-slice admin surface
 

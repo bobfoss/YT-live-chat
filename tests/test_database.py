@@ -11,6 +11,7 @@ from yt_live_chat.database import (
     connect,
     database_status,
     initialize_database,
+    list_video_messages,
     record_replay_observation,
     replay_states,
     store_replay_capture,
@@ -163,6 +164,31 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(replay["abcdefghijk"]["replay_status"], "captured")
             self.assertEqual(replay["abcdefghijk"]["message_count"], 2)
             self.assertEqual(replay["missing"]["replay_status"], "unobserved")
+
+            first_page = list_video_messages(
+                database,
+                "abcdefghijk",
+                limit=1,
+            )
+            second_page = list_video_messages(
+                database,
+                "abcdefghijk",
+                limit=1,
+                offset=1,
+            )
+            self.assertEqual(first_page["captureId"], first["captureId"])
+            self.assertEqual(first_page["total"], 2)
+            self.assertEqual(len(first_page["messages"]), 1)
+            self.assertEqual(first_page["messages"][0]["authorName"], "First author")
+            self.assertEqual(first_page["messages"][0]["offsetMs"], 20485)
+            self.assertEqual(second_page["messages"][0]["messageText"], ":heart:")
+            missing_messages = list_video_messages(database, "missing")
+            self.assertIsNone(missing_messages["captureId"])
+            self.assertEqual(missing_messages["messages"], [])
+            with self.assertRaisesRegex(ValueError, "between 1 and 500"):
+                list_video_messages(database, "abcdefghijk", limit=501)
+            with self.assertRaisesRegex(ValueError, "nonnegative"):
+                list_video_messages(database, "abcdefghijk", offset=-1)
 
     def test_non_capture_replay_observations_remain_plugin_owned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

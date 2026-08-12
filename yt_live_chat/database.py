@@ -419,3 +419,85 @@ def video_replay_status(
         )
         for video_id in normalized
     }
+
+
+def list_video_messages(
+    db_path: Path | str,
+    video_id: str,
+    *,
+    limit: int = 250,
+    offset: int = 0,
+) -> dict[str, Any]:
+    normalized_video_id = str(video_id or "").strip()
+    if not normalized_video_id:
+        raise ValueError("Video ID is required")
+    if limit < 1 or limit > 500:
+        raise ValueError("Message limit must be between 1 and 500")
+    if offset < 0:
+        raise ValueError("Message offset must be nonnegative")
+    conn = connect(db_path, read_only=True)
+    try:
+        capture = conn.execute(
+            """
+            SELECT c.capture_id, c.completed_at
+            FROM chat_targets t
+            JOIN chat_captures c ON c.capture_id = t.latest_capture_id
+            WHERE t.video_id = ? AND t.replay_status = 'captured'
+            """,
+            (normalized_video_id,),
+        ).fetchone()
+        if capture is None:
+            return {
+                "videoId": normalized_video_id,
+                "captureId": None,
+                "completedAt": "",
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "messages": [],
+            }
+        capture_id = int(capture["capture_id"])
+        total = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM chat_actions
+                WHERE capture_id = ? AND is_message = 1
+                """,
+                (capture_id,),
+            ).fetchone()[0]
+        )
+        messages = [
+            {
+                "sequence": int(row["sequence"]),
+                "offsetMs": row["video_offset_ms"],
+                "actionType": str(row["action_type"]),
+                "rendererType": str(row["renderer_type"]),
+                "messageId": str(row["message_id"]),
+                "authorChannelId": str(row["author_channel_id"]),
+                "authorName": str(row["author_name"]),
+                "messageText": str(row["message_text"]),
+            }
+            for row in conn.execute(
+                """
+                SELECT sequence, video_offset_ms, action_type, renderer_type,
+                       message_id, author_channel_id, author_name, message_text
+                FROM chat_actions
+                WHERE capture_id = ? AND is_message = 1
+                ORDER BY sequence
+                LIMIT ? OFFSET ?
+                """,
+                (capture_id, limit, offset),
+            )
+        ]
+        return {
+            "videoId": normalized_video_id,
+            "captureId": capture_id,
+            "completedAt": str(capture["completed_at"]),
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "messages": messages,
+        }
+    finally:
+        conn.close()

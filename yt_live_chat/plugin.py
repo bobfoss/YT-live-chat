@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from typing import Any
+import urllib.parse
 
 from . import __version__
 from .acquisition import download_recorded_chat
@@ -15,6 +17,7 @@ from .database import (
     SCHEMA_VERSION,
     database_status,
     initialize_database,
+    list_video_messages,
     record_replay_observation,
     replay_states,
     store_replay_capture,
@@ -78,8 +81,17 @@ class YTLiveChatPlugin:
     plugin_version = __version__
     plugin_api_version = 2
     required_host_features = frozenset({"youtube_ytdlp_v1"})
-    capabilities = frozenset({"worker_processes"})
-    browser_assets: tuple[dict[str, str], ...] = ()
+    capabilities = frozenset(
+        {
+            "video_live_chat_availability",
+            "video_live_chat_messages",
+            "worker_processes",
+        }
+    )
+    browser_assets = (
+        {"path": "browser.css", "type": "style"},
+        {"path": "browser.js", "type": "script"},
+    )
 
     def __init__(self) -> None:
         self._database_path: Path | None = None
@@ -365,7 +377,34 @@ class YTLiveChatPlugin:
                 }
             except ValueError as exc:
                 return 400, {"error": str(exc)}
+        messages_match = re.fullmatch(r"videos/([^/]+)/messages", path)
+        if method == "GET" and messages_match:
+            if self._database_path is None:
+                return 503, {"error": "YT Live Chat is not ready"}
+            video_id = urllib.parse.unquote(messages_match.group(1))
+            if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+                return 400, {"error": "Expected an 11-character YouTube video ID"}
+            try:
+                limit = int((query.get("limit") or ["250"])[0] or 250)
+                offset = int((query.get("offset") or ["0"])[0] or 0)
+                return 200, list_video_messages(
+                    self._database_path,
+                    video_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
         return None
+
+    def handle_browser_asset(self, path: str) -> tuple[str, bytes]:
+        content_types = {
+            "browser.css": "text/css; charset=utf-8",
+            "browser.js": "text/javascript; charset=utf-8",
+        }
+        if path not in content_types:
+            raise KeyError(path)
+        return content_types[path], Path(__file__).with_name(path).read_bytes()
 
     def shutdown(self) -> None:
         self._database_path = None

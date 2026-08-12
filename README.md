@@ -9,6 +9,11 @@ into its own SQLite database, and reports capture statistics in YT Library's
 Advanced Plugins panel. YT Library retains ownership of cookies, proxy policy,
 request pacing, retries, logging, cancellation, and the persistent worker queue.
 
+Captured videos receive a **Recorded chat** indicator throughout YT Library's
+native video views. Their video detail page includes a collapsible, paginated
+message viewer with links that open the YouTube video at each message's recorded
+offset. The viewer does not yet synchronize with an embedded player.
+
 ## Install for local development
 
 From this repository:

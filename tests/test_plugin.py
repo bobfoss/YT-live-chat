@@ -77,8 +77,21 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(plugin.plugin_name, "YT Live Chat")
             self.assertEqual(plugin.plugin_api_version, 2)
             self.assertEqual(plugin.required_host_features, {"youtube_ytdlp_v1"})
-            self.assertEqual(plugin.capabilities, {"worker_processes"})
-            self.assertEqual(plugin.browser_assets, ())
+            self.assertEqual(
+                plugin.capabilities,
+                {
+                    "video_live_chat_availability",
+                    "video_live_chat_messages",
+                    "worker_processes",
+                },
+            )
+            self.assertEqual(
+                plugin.browser_assets,
+                (
+                    {"path": "browser.css", "type": "style"},
+                    {"path": "browser.js", "type": "script"},
+                ),
+            )
             self.assertTrue(database_path.is_file())
             self.assertEqual(status["state"], "ready")
             self.assertEqual(
@@ -108,6 +121,17 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(process["service"], "youtube")
             self.assertEqual(process["hooks"], ("video_scan",))
             self.assertEqual(process["buttonLabel"], "Download recorded live chats")
+            content_type, browser_script = plugin.handle_browser_asset("browser.js")
+            self.assertEqual(content_type, "text/javascript; charset=utf-8")
+            self.assertIn(b"id: 'live_chat'", browser_script)
+            self.assertIn(b"entityCards: {", browser_script)
+            self.assertIn(b"videoDetail: {", browser_script)
+            self.assertIn(b"video_live_chat_messages", browser_script)
+            content_type, browser_style = plugin.handle_browser_asset("browser.css")
+            self.assertEqual(content_type, "text/css; charset=utf-8")
+            self.assertIn(b".ytlc-panel", browser_style)
+            with self.assertRaises(KeyError):
+                plugin.handle_browser_asset("missing.js")
 
             plugin.shutdown()
             self.assertEqual(plugin.status()["state"], "stopped")
@@ -207,6 +231,28 @@ class PluginTests(unittest.TestCase):
                 payload["videos"]["missing"]["replay_status"],
                 "unobserved",
             )
+            code, messages = plugin.handle_api(
+                "GET",
+                "videos/abcdefghijk/messages",
+                {"limit": ["1"], "offset": ["1"]},
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(messages["total"], 2)
+            self.assertEqual(messages["messages"][0]["messageText"], ":heart:")
+            code, invalid = plugin.handle_api(
+                "GET",
+                "videos/invalid/messages",
+                {},
+            )
+            self.assertEqual(code, 400)
+            self.assertIn("11-character", invalid["error"])
+            code, invalid = plugin.handle_api(
+                "GET",
+                "videos/abcdefghijk/messages",
+                {"limit": ["501"]},
+            )
+            self.assertEqual(code, 400)
+            self.assertIn("between 1 and 500", invalid["error"])
 
     def test_replay_worker_records_observed_absence_without_inference(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
