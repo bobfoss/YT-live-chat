@@ -2,17 +2,74 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .acquisition import download_recorded_chat
 from .config import config_path, ensure_config_file, load_config
 from .database import (
     INTEGRATION_CONTRACT_VERSION,
     SCHEMA_VERSION,
     database_status,
     initialize_database,
+    record_replay_observation,
+    replay_states,
+    store_replay_capture,
+    utc_now,
+    video_replay_status,
 )
+
+
+def _targeted_video_ids(params: dict[str, Any]) -> tuple[str, ...] | None:
+    targeted = False
+    requested: list[str] = []
+    for name in ("video_id", "video_ids"):
+        if name not in params:
+            continue
+        targeted = True
+        raw_values = params.get(name)
+        values = (
+            (raw_values,)
+            if isinstance(raw_values, str) or not isinstance(raw_values, Iterable)
+            else raw_values
+        )
+        for raw_value in values:
+            requested.extend(
+                video_id
+                for part in str(raw_value or "").split(",")
+                if (video_id := part.strip())
+            )
+    if not targeted:
+        return None
+    return tuple(dict.fromkeys(requested))
+
+
+def _checked_recently(value: Any, cutoff: datetime) -> bool:
+    try:
+        checked_at = datetime.fromisoformat(
+            str(value or "").replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
+    except ValueError:
+        return False
+    return checked_at >= cutoff
+
+
+def _unavailable_error(message: str) -> bool:
+    lowered = message.casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "members-only",
+            "members only",
+            "private video",
+            "this video is unavailable",
+            "video unavailable",
+            "has been removed",
+        )
+    )
 
 
 class YTLiveChatPlugin:
@@ -20,7 +77,8 @@ class YTLiveChatPlugin:
     plugin_name = "YT Live Chat"
     plugin_version = __version__
     plugin_api_version = 2
-    capabilities: frozenset[str] = frozenset()
+    required_host_features = frozenset({"youtube_ytdlp_v1"})
+    capabilities = frozenset({"worker_processes"})
     browser_assets: tuple[dict[str, str], ...] = ()
 
     def __init__(self) -> None:
@@ -36,6 +94,190 @@ class YTLiveChatPlugin:
         initialize_database(database_path)
         self._config = own_config
         self._database_path = database_path
+
+    def worker_processes(self) -> tuple[dict[str, Any], ...]:
+        try:
+            max_in_flight = max(
+                1,
+                min(20, int(self._config.get("worker_max_in_flight", 2))),
+            )
+        except (TypeError, ValueError):
+            max_in_flight = 2
+        return (
+            {
+                "id": "replay",
+                "name": "Download recorded live chat",
+                "description": (
+                    "Queue recorded live-chat downloads for ended livestreams "
+                    "whose chat availability has not yet been observed."
+                ),
+                "service": "youtube",
+                "maxInFlight": max_in_flight,
+                "adminSurface": "advanced",
+                "buttonLabel": "Download recorded live chats",
+                "confirm": (
+                    "Queue recorded live-chat downloads for eligible ended "
+                    "livestreams? The common worker queue can be stopped and resumed."
+                ),
+                "hooks": ("video_scan",),
+            },
+        )
+
+    def plan_worker(
+        self,
+        worker_id: str,
+        context: Any,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if worker_id != "replay":
+            raise KeyError(worker_id)
+        if self._database_path is None:
+            raise RuntimeError("YT Live Chat is not ready")
+        requested_video_ids = _targeted_video_ids(params)
+        requested = (
+            frozenset(requested_video_ids)
+            if requested_video_ids is not None
+            else None
+        )
+        try:
+            retry_days = max(
+                0,
+                min(3650, int(self._config.get("replay_retry_days", 7))),
+            )
+        except (TypeError, ValueError):
+            retry_days = 7
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retry_days)
+        states = replay_states(self._database_path)
+        tasks: list[dict[str, Any]] = []
+        for video in context.library_videos():
+            video_id = str(video.get("video_id") or "").strip()
+            if not video_id or (requested is not None and video_id not in requested):
+                continue
+            if str(video.get("video_type") or "") != "livestream":
+                continue
+            if str(video.get("broadcast_status") or "") != "ended":
+                continue
+            state = states.get(video_id) or {}
+            replay_status = str(state.get("replay_status") or "")
+            if replay_status == "captured":
+                continue
+            if replay_status and _checked_recently(
+                state.get("replay_checked_at"),
+                cutoff,
+            ):
+                continue
+            tasks.append(
+                {
+                    "task_id": video_id,
+                    "subject_id": video_id,
+                    "video_id": video_id,
+                    "title": str(video.get("title") or ""),
+                    "priority": 0,
+                    "payload": {
+                        "broadcast_started_at": video.get("broadcast_started_at"),
+                        "broadcast_ended_at": video.get("broadcast_ended_at"),
+                        "broadcast_status_checked_at": video.get(
+                            "broadcast_status_checked_at"
+                        ),
+                    },
+                }
+            )
+        return tasks
+
+    def run_worker(
+        self,
+        worker_id: str,
+        task: dict[str, Any],
+        runtime: Any,
+    ) -> dict[str, Any]:
+        if worker_id != "replay":
+            raise KeyError(worker_id)
+        if self._database_path is None:
+            raise RuntimeError("YT Live Chat is not ready")
+        video_id = str(task.get("video_id") or task.get("subject_id") or "").strip()
+        if not video_id:
+            raise ValueError("Recorded live-chat task requires a video ID")
+        if runtime.stop_requested():
+            return {
+                "outcome": "cancelled",
+                "processed": 0,
+                "skipped": 1,
+                "message": "Cancelled before recorded live-chat download started",
+            }
+        payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+        started_at = utc_now()
+        try:
+            download = download_recorded_chat(
+                video_id,
+                config_path(self._config, "capture_directory"),
+                runtime,
+            )
+        except Exception as exc:
+            if runtime.stop_requested():
+                raise
+            message = f"{type(exc).__name__}: {exc}"
+            replay_status = "unavailable" if _unavailable_error(message) else "failed"
+            record_replay_observation(
+                self._database_path,
+                video_id,
+                replay_status,
+                message=message,
+            )
+            runtime.log("warn" if replay_status == "unavailable" else "error", message)
+            return {
+                "outcome": replay_status,
+                "processed": 1,
+                "failed": 0 if replay_status == "unavailable" else 1,
+                "skipped": 1 if replay_status == "unavailable" else 0,
+                "message": message,
+            }
+        if download.status == "not_available":
+            message = f"No recorded live chat is currently available for {video_id}"
+            record_replay_observation(
+                self._database_path,
+                video_id,
+                "not_available",
+                message=message,
+            )
+            runtime.log("warn", message)
+            return {
+                "outcome": "not_available",
+                "processed": 1,
+                "skipped": 1,
+                "message": message,
+            }
+        if download.parsed is None:
+            raise RuntimeError("Recorded live-chat download has no parsed actions")
+        stored = store_replay_capture(
+            self._database_path,
+            video_id,
+            source_path=download.source_path,
+            source_sha256=download.source_sha256,
+            source_bytes=download.source_bytes,
+            yt_dlp_version=download.yt_dlp_version,
+            parsed=download.parsed,
+            started_at=started_at,
+            broadcast_started_at=payload.get("broadcast_started_at"),
+            broadcast_ended_at=payload.get("broadcast_ended_at"),
+            broadcast_status_checked_at=payload.get(
+                "broadcast_status_checked_at"
+            ),
+        )
+        action_count = len(download.parsed.actions)
+        message_count = download.parsed.message_count
+        message = (
+            f"Downloaded {action_count} chat action(s) and {message_count} "
+            f"message(s) for {video_id}"
+        )
+        if not stored["created"]:
+            message += "; capture content was already stored"
+        runtime.log("info", message)
+        return {
+            "outcome": "found",
+            "processed": 1,
+            "found": 1,
+            "message": message,
+        }
 
     def status(self) -> dict[str, Any]:
         if self._database_path is None:
@@ -74,10 +316,10 @@ class YTLiveChatPlugin:
                 },
                 {
                     "id": "replay-captures",
-                    "label": "Replay captures",
+                    "label": "Recorded chats",
                     "value": int(status["replayCaptureCount"]),
                     "format": "integer",
-                    "description": "Completed chat-replay retrievals for ended broadcasts.",
+                    "description": "Recorded live chats downloaded after broadcasts ended.",
                 },
                 {
                     "id": "chat-actions",
@@ -109,9 +351,20 @@ class YTLiveChatPlugin:
         path: str,
         query: dict[str, list[str]],
     ) -> tuple[int, Any] | None:
-        del query
         if method == "GET" and path == "status":
             return 200, self.status()
+        if method == "GET" and path == "videos":
+            if self._database_path is None:
+                return 503, {"error": "YT Live Chat is not ready"}
+            try:
+                return 200, {
+                    "videos": video_replay_status(
+                        self._database_path,
+                        query.get("id") or [],
+                    )
+                }
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
         return None
 
     def shutdown(self) -> None:

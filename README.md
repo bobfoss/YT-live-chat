@@ -3,11 +3,11 @@
 YT Live Chat is an optional sidecar plugin for YT Library. The informal project
 name is **YTLC**.
 
-This initial scaffold establishes the plugin boundary, plugin-owned config and
-SQLite database, and zero-state statistics for YT Library's Advanced Plugins
-panel. It intentionally does not download chat yet: acquisition depends on a
-future YT Library host capability that provides authenticated YouTube access
-without moving cookies or proxy configuration into the plugin.
+YTLC downloads recorded live chat for ended livestreams through YT Library's
+host-owned YouTube service. It preserves the source as JSONL, normalizes actions
+into its own SQLite database, and reports capture statistics in YT Library's
+Advanced Plugins panel. YT Library retains ownership of cookies, proxy policy,
+request pacing, retries, logging, cancellation, and the persistent worker queue.
 
 ## Install for local development
 
@@ -31,9 +31,11 @@ Then register it in YT Library's local `yt_library.config.json`:
 }
 ```
 
-On first start, YTLC creates its config and database. YT Library owns the
-enable/disable control. When enabled, the Advanced Plugins panel shows the
-plugin status and basic capture statistics.
+On first start, YTLC creates or upgrades its config and database. YT Library
+owns the enable/disable control. When enabled, the Advanced Plugins panel shows
+the plugin status, a **Download recorded live chats** action, queue/run state,
+and capture statistics. Successful metadata scans enqueue a separate YTLC task
+only when `video_type='livestream'` and `broadcast_status='ended'`.
 
 See [docs/design.md](docs/design.md) for the agreed host boundary and future
 worker shape.

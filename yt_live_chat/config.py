@@ -12,6 +12,8 @@ DEFAULT_CONFIG_PATH = ROOT / "yt_live_chat.config.json"
 DEFAULT_CONFIG: dict[str, Any] = {
     "database": "yt_live_chat.sqlite3",
     "capture_directory": "captures",
+    "worker_max_in_flight": 2,
+    "replay_retry_days": 7,
 }
 
 

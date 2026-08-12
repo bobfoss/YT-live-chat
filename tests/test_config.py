@@ -15,6 +15,8 @@ class ConfigTests(unittest.TestCase):
             {
                 "database": "yt_live_chat.sqlite3",
                 "capture_directory": "captures",
+                "worker_max_in_flight": 2,
+                "replay_retry_days": 7,
             },
         )
         self.assertNotIn("youtube_cookies", DEFAULT_CONFIG)

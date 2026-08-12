@@ -7,9 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .jsonl import ParsedChatReplay
+
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INTEGRATION_CONTRACT_VERSION = 1
 
 
@@ -78,7 +80,7 @@ def initialize_database(db_path: Path | str) -> Path:
     conn = connect(path)
     try:
         existing_version = _schema_version(conn)
-        if existing_version and existing_version != SCHEMA_VERSION:
+        if existing_version not in {0, 1, SCHEMA_VERSION}:
             raise RuntimeError(
                 "Live chat database uses alpha schema "
                 f"{existing_version}; rebuild it for schema {SCHEMA_VERSION}"
@@ -179,3 +181,241 @@ def database_status(db_path: Path | str) -> dict[str, Any]:
     finally:
         if conn is not None:
             conn.close()
+
+
+def _refresh_catalog_stats(conn: sqlite3.Connection, now: str) -> None:
+    conn.execute(
+        """
+        UPDATE catalog_stats
+        SET captured_video_count = (
+              SELECT COUNT(DISTINCT video_id) FROM chat_captures
+              WHERE status = 'complete'
+            ),
+            live_capture_count = (
+              SELECT COUNT(*) FROM chat_captures
+              WHERE status = 'complete' AND mode = 'live'
+            ),
+            replay_capture_count = (
+              SELECT COUNT(*) FROM chat_captures
+              WHERE status = 'complete' AND mode = 'replay'
+            ),
+            action_count = (SELECT COUNT(*) FROM chat_actions),
+            message_count = (
+              SELECT COALESCE(SUM(is_message), 0) FROM chat_actions
+            ),
+            source_byte_count = (
+              SELECT COALESCE(SUM(source_bytes), 0) FROM chat_captures
+              WHERE status = 'complete'
+            ),
+            updated_at = ?
+        WHERE singleton = 1
+        """,
+        (now,),
+    )
+
+
+def replay_states(db_path: Path | str) -> dict[str, dict[str, Any]]:
+    conn = connect(db_path, read_only=True)
+    try:
+        return {
+            str(row["video_id"]): dict(row)
+            for row in conn.execute(
+                """
+                SELECT video_id, replay_status, replay_checked_at,
+                       latest_capture_id, last_error
+                FROM chat_targets
+                ORDER BY video_id
+                """
+            )
+        }
+    finally:
+        conn.close()
+
+
+def record_replay_observation(
+    db_path: Path | str,
+    video_id: str,
+    replay_status: str,
+    *,
+    message: str = "",
+) -> None:
+    if replay_status not in {"not_available", "unavailable", "failed"}:
+        raise ValueError(f"Invalid replay observation status: {replay_status}")
+    now = utc_now()
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO chat_targets(
+                  video_id, replay_status, replay_checked_at,
+                  latest_capture_id, last_error, updated_at
+                )
+                VALUES (?, ?, ?, NULL, ?, ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                  replay_status = excluded.replay_status,
+                  replay_checked_at = excluded.replay_checked_at,
+                  last_error = excluded.last_error,
+                  updated_at = excluded.updated_at
+                """,
+                (video_id, replay_status, now, str(message or "")[:10_000], now),
+            )
+    finally:
+        conn.close()
+
+
+def store_replay_capture(
+    db_path: Path | str,
+    video_id: str,
+    *,
+    source_path: str,
+    source_sha256: str,
+    source_bytes: int,
+    yt_dlp_version: str,
+    parsed: ParsedChatReplay,
+    started_at: str,
+    broadcast_started_at: str | None,
+    broadcast_ended_at: str | None,
+    broadcast_status_checked_at: str | None,
+) -> dict[str, Any]:
+    completed_at = utc_now()
+    conn = connect(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO chat_captures(
+                  video_id, mode, status, source_path, source_sha256,
+                  source_bytes, source_line_count, action_count, message_count,
+                  author_count, first_offset_ms, last_offset_ms,
+                  broadcast_started_at, broadcast_ended_at,
+                  broadcast_status_checked_at, yt_dlp_version,
+                  started_at, completed_at
+                )
+                VALUES (?, 'replay', 'complete', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    video_id,
+                    source_path,
+                    source_sha256,
+                    max(0, int(source_bytes)),
+                    parsed.source_line_count,
+                    len(parsed.actions),
+                    parsed.message_count,
+                    parsed.author_count,
+                    parsed.first_offset_ms,
+                    parsed.last_offset_ms,
+                    broadcast_started_at,
+                    broadcast_ended_at,
+                    broadcast_status_checked_at,
+                    str(yt_dlp_version or ""),
+                    started_at,
+                    completed_at,
+                ),
+            )
+            created = bool(cursor.rowcount)
+            if created:
+                capture_id = int(cursor.lastrowid)
+                conn.executemany(
+                    """
+                    INSERT INTO chat_actions(
+                      capture_id, sequence, video_offset_ms, action_type,
+                      renderer_type, message_id, author_channel_id, author_name,
+                      message_text, is_message, payload_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        (
+                            capture_id,
+                            action.sequence,
+                            action.video_offset_ms,
+                            action.action_type,
+                            action.renderer_type,
+                            action.message_id,
+                            action.author_channel_id,
+                            action.author_name,
+                            action.message_text,
+                            1 if action.is_message else 0,
+                            action.payload_json,
+                        )
+                        for action in parsed.actions
+                    ),
+                )
+            else:
+                row = conn.execute(
+                    """
+                    SELECT capture_id
+                    FROM chat_captures
+                    WHERE video_id = ? AND mode = 'replay' AND source_sha256 = ?
+                    """,
+                    (video_id, source_sha256),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("Stored replay capture could not be reloaded")
+                capture_id = int(row["capture_id"])
+            conn.execute(
+                """
+                INSERT INTO chat_targets(
+                  video_id, replay_status, replay_checked_at,
+                  latest_capture_id, last_error, updated_at
+                )
+                VALUES (?, 'captured', ?, ?, '', ?)
+                ON CONFLICT(video_id) DO UPDATE SET
+                  replay_status = 'captured',
+                  replay_checked_at = excluded.replay_checked_at,
+                  latest_capture_id = excluded.latest_capture_id,
+                  last_error = '',
+                  updated_at = excluded.updated_at
+                """,
+                (video_id, completed_at, capture_id, completed_at),
+            )
+            _refresh_catalog_stats(conn, completed_at)
+        return {"captureId": capture_id, "created": created}
+    finally:
+        conn.close()
+
+
+def video_replay_status(
+    db_path: Path | str,
+    video_ids: list[str] | tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    normalized = tuple(dict.fromkeys(str(value or "").strip() for value in video_ids))
+    normalized = tuple(value for value in normalized if value)
+    if len(normalized) > 500:
+        raise ValueError("At most 500 video IDs may be requested")
+    if not normalized:
+        return {}
+    placeholders = ",".join("?" for _value in normalized)
+    conn = connect(db_path, read_only=True)
+    try:
+        rows = {
+            str(row["video_id"]): dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT t.video_id, t.replay_status, t.replay_checked_at,
+                       t.last_error, c.capture_id, c.source_bytes,
+                       c.action_count, c.message_count, c.author_count,
+                       c.first_offset_ms, c.last_offset_ms, c.completed_at
+                FROM chat_targets t
+                LEFT JOIN chat_captures c ON c.capture_id = t.latest_capture_id
+                WHERE t.video_id IN ({placeholders})
+                """,
+                normalized,
+            )
+        }
+    finally:
+        conn.close()
+    return {
+        video_id: rows.get(
+            video_id,
+            {
+                "video_id": video_id,
+                "replay_status": "unobserved",
+                "replay_checked_at": "",
+                "last_error": "",
+                "capture_id": None,
+            },
+        )
+        for video_id in normalized
+    }

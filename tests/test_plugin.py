@@ -5,7 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from yt_live_chat.database import database_status
 from yt_live_chat.plugin import create_plugin
+
+from tests.fixtures import CHAT_JSONL
 
 
 class FakeContext:
@@ -16,6 +19,37 @@ class FakeContext:
     def resolve_path(self, value: str) -> Path:
         path = Path(value)
         return path if path.is_absolute() else self.root / path
+
+
+class FakePlanningContext:
+    def __init__(self, videos) -> None:
+        self.videos = videos
+
+    def library_videos(self):
+        return list(self.videos)
+
+
+class FakeRuntime:
+    def __init__(self, *, available: bool = True) -> None:
+        self.available = available
+        self.logs = []
+
+    def stop_requested(self):
+        return False
+
+    def log(self, level, message, *, subject_id=""):
+        self.logs.append((level, message, subject_id))
+
+    def run_youtube_ytdlp(self, video_id, options, *, download):
+        if self.available:
+            output = Path(
+                options["outtmpl"]
+                .replace("%(id)s", video_id)
+                .replace("%(ext)s", "live_chat.json")
+            )
+            output.write_text(CHAT_JSONL, encoding="utf-8")
+            return {"id": video_id, "subtitles": {"live_chat": [{"ext": "json"}]}}
+        return {"id": video_id, "subtitles": {}}
 
 
 class PluginTests(unittest.TestCase):
@@ -42,7 +76,8 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(plugin.plugin_id, "live_chat")
             self.assertEqual(plugin.plugin_name, "YT Live Chat")
             self.assertEqual(plugin.plugin_api_version, 2)
-            self.assertEqual(plugin.capabilities, frozenset())
+            self.assertEqual(plugin.required_host_features, {"youtube_ytdlp_v1"})
+            self.assertEqual(plugin.capabilities, {"worker_processes"})
             self.assertEqual(plugin.browser_assets, ())
             self.assertTrue(database_path.is_file())
             self.assertEqual(status["state"], "ready")
@@ -68,6 +103,11 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(payload["state"], "ready")
             self.assertIsNone(plugin.handle_api("POST", "status", {}))
+            process = plugin.worker_processes()[0]
+            self.assertEqual(process["id"], "replay")
+            self.assertEqual(process["service"], "youtube")
+            self.assertEqual(process["hooks"], ("video_scan",))
+            self.assertEqual(process["buttonLabel"], "Download recorded live chats")
 
             plugin.shutdown()
             self.assertEqual(plugin.status()["state"], "stopped")
@@ -87,7 +127,114 @@ class PluginTests(unittest.TestCase):
                 {
                     "database": "yt_live_chat.sqlite3",
                     "capture_directory": "captures",
+                    "worker_max_in_flight": 2,
+                    "replay_retry_days": 7,
                 },
+            )
+
+    def test_replay_worker_plans_only_ended_livestreams_and_ingests_chat(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_path = root / "yt_live_chat.config.json"
+            plugin = create_plugin()
+            plugin.start(FakeContext(root, config_path))
+            context = FakePlanningContext(
+                [
+                    {
+                        "video_id": "abcdefghijk",
+                        "title": "Ended stream",
+                        "video_type": "livestream",
+                        "broadcast_status": "ended",
+                        "broadcast_started_at": "2026-08-11T16:01:53Z",
+                        "broadcast_ended_at": "2026-08-11T16:27:12Z",
+                        "broadcast_status_checked_at": "2026-08-11T16:28:00Z",
+                    },
+                    {
+                        "video_id": "lmnopqrstuv",
+                        "title": "Active stream",
+                        "video_type": "livestream",
+                        "broadcast_status": "live",
+                    },
+                    {
+                        "video_id": "zzzzzzzzzzz",
+                        "title": "Unobserved stream",
+                        "video_type": "livestream",
+                        "broadcast_status": None,
+                    },
+                    {
+                        "video_id": "yyyyyyyyyyy",
+                        "title": "Ordinary video",
+                        "video_type": "video",
+                        "broadcast_status": "ended",
+                    },
+                ]
+            )
+
+            tasks = plugin.plan_worker("replay", context, {})
+
+            self.assertEqual(len(tasks), 1)
+            self.assertEqual(tasks[0]["video_id"], "abcdefghijk")
+            self.assertEqual(tasks[0]["payload"]["broadcast_ended_at"], "2026-08-11T16:27:12Z")
+            targeted = plugin.plan_worker(
+                "replay",
+                context,
+                {"hook": "video_scan", "video_id": ["abcdefghijk"]},
+            )
+            self.assertEqual(targeted, tasks)
+
+            runtime = FakeRuntime()
+            result = plugin.run_worker("replay", tasks[0], runtime)
+
+            self.assertEqual(result["outcome"], "found")
+            self.assertEqual(result["found"], 1)
+            status = database_status(root / "yt_live_chat.sqlite3")
+            self.assertEqual(status["capturedVideoCount"], 1)
+            self.assertEqual(status["replayCaptureCount"], 1)
+            self.assertEqual(status["actionCount"], 3)
+            self.assertEqual(status["messageCount"], 2)
+            self.assertEqual(plugin.plan_worker("replay", context, {}), [])
+            code, payload = plugin.handle_api(
+                "GET",
+                "videos",
+                {"id": ["abcdefghijk", "missing"]},
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(
+                payload["videos"]["abcdefghijk"]["replay_status"],
+                "captured",
+            )
+            self.assertEqual(
+                payload["videos"]["missing"]["replay_status"],
+                "unobserved",
+            )
+
+    def test_replay_worker_records_observed_absence_without_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plugin = create_plugin()
+            plugin.start(FakeContext(root, root / "yt_live_chat.config.json"))
+            task = {
+                "video_id": "abcdefghijk",
+                "subject_id": "abcdefghijk",
+                "payload": {},
+            }
+
+            result = plugin.run_worker(
+                "replay",
+                task,
+                FakeRuntime(available=False),
+            )
+
+            self.assertEqual(result["outcome"], "not_available")
+            code, payload = plugin.handle_api(
+                "GET",
+                "videos",
+                {"id": ["abcdefghijk"]},
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(
+                payload["videos"]["abcdefghijk"]["replay_status"],
+                "not_available",
             )
 
 

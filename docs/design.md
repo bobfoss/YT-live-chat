@@ -7,8 +7,9 @@ live-chat actions during an active broadcast and retrieving chat replay after a
 broadcast ends. The source emitted by yt-dlp is newline-delimited JSON actions
 (JSONL/NDJSON), despite its `.json` filename suffix.
 
-The initial implementation is intentionally a registration and observability
-scaffold. It creates no worker process and makes no YouTube request.
+The recorded-chat implementation provides a bounded worker for ended
+livestreams. Active-broadcast capture and synchronized playback remain later
+milestones.
 
 ## Ownership boundary
 
@@ -59,11 +60,25 @@ Metadata scanning and chat acquisition are coupled only through enqueueing.
 After a successful scan, the host hook may ask YTLC to plan a separate task for
 that video. The metadata worker never downloads chat inline.
 
-Active capture and replay retrieval will be distinct plugin worker processes.
-Both will use the host's persistent queue, but they require a host-owned
-YouTube service capability beyond plugin API v2's current `service: youtube`
-capacity label. Acquisition remains blocked until that capability is explicit
-and versioned or feature-negotiated.
+Active capture and recorded-chat retrieval are distinct plugin worker
+processes. The implemented `replay` process requires the feature-negotiated
+`youtube_ytdlp_v1` service. YTL supplies disposable cookies, proxy and request
+policy, logging, retry limits, and cancellation. YTLC supplies the video ID,
+the live-chat artifact options, and its plugin-owned staging destination.
+
+The recorded-chat planner accepts only `video_type='livestream'` with
+`broadcast_status='ended'`. It subscribes to `video_scan`, and its Advanced
+bulk action plans eligible existing rows. Its internal states are `captured`,
+`not_available`, `unavailable`, and `failed`, each with an observation time.
+Recent negative observations are not immediately retried; none are inferred
+from broadcast state.
+
+yt-dlp output is validated as JSONL before it is atomically moved to a
+content-addressed `.jsonl` artifact. YTLC stores immutable capture revisions
+and normalized action rows containing offsets, action and renderer types,
+message/author fields, and the preserved raw action payload. Repeating an
+identical download reuses the source hash and does not duplicate actions or
+statistics.
 
 ## First-slice admin surface
 
@@ -72,7 +87,7 @@ enable/disable switch. YTLC's status payload provides these zero-state metrics:
 
 - captured videos;
 - live captures;
-- replay captures;
+- recorded chats;
 - JSONL chat actions;
 - chat messages;
 - database size.
