@@ -84,6 +84,13 @@ statistics.
 The browser integration is plugin-owned. It uses YT Library's generic
 `entityCards` and `videoDetail` contracts, queries at most 500 video identities
 per availability request, and retrieves at most 500 user messages per page.
+
+YTLC advertises the `channel_live_chat_history` capability and contributes a
+browser `channelVideoTabs` entry. Its count and page requests query only the
+latest capture associated with each video, group matching message actions by
+canonical author channel ID, and return bounded video IDs to the host. YTL
+hydrates and renders those IDs as native cards; YTLC never reads the YTL
+database.
 Timestamp links open the source video at the recorded offset; they are not an
 embedded-player synchronization contract.
 

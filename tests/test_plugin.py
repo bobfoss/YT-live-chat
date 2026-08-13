@@ -82,6 +82,7 @@ class PluginTests(unittest.TestCase):
                 {
                     "video_live_chat_availability",
                     "video_live_chat_messages",
+                    "channel_live_chat_history",
                     "worker_processes",
                 },
             )
@@ -127,6 +128,14 @@ class PluginTests(unittest.TestCase):
             self.assertIn(b"entityCards: {", browser_script)
             self.assertIn(b"videoDetail: {", browser_script)
             self.assertIn(b"video_live_chat_messages", browser_script)
+            self.assertIn(b"channelVideoTabs", browser_script)
+            code, payload = plugin.handle_api(
+                "GET",
+                "channels/UCauthor1/videos",
+                {"limit": ["1"], "offset": ["0"]},
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(payload["total"], 0)
             content_type, browser_style = plugin.handle_browser_asset("browser.css")
             self.assertEqual(content_type, "text/css; charset=utf-8")
             self.assertIn(b".ytlc-panel", browser_style)

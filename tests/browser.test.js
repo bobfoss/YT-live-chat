@@ -21,7 +21,7 @@ function registeredPlugin() {
     window: {
       YTLibraryBrowserPlugins: {
         apiVersion: 2,
-        features: { entityCards: 1 },
+        features: { channelVideoTabs: 1, entityCards: 1 },
         register(value) {
           plugin = value;
         },
@@ -41,11 +41,49 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
     'video_live_chat_availability',
   );
   assert.equal(plugin.videoDetail.capability, 'video_live_chat_messages');
+  assert.equal(plugin.channelVideoTabs[0].label, 'Chat history');
+  assert.equal(
+    plugin.channelVideoTabs[0].capability,
+    'channel_live_chat_history',
+  );
   assert.match(source, /host\.libraryChannels\(channelIds\)/);
   assert.match(source, /\^@\[\^\\s\/@\]\+\$\/u\.test\(authorName\)/);
   assert.match(source, /host\.ui\.localChannelHref\(authorReference\)/);
   assert.match(source, /document\.createElement\(linked \? 'a' : 'strong'\)/);
   assert.match(styles, /a\.ytlc-message-author \{ color: var\(--accent\);/);
+});
+
+test('channel chat-history tab counts and loads participated video ids', async () => {
+  const plugin = registeredPlugin();
+  const tab = plugin.channelVideoTabs[0];
+  const calls = [];
+  const host = {
+    async requestJson(pathname, params) {
+      calls.push({ pathname, params });
+      return {
+        videos: [{ videoId: 'abcdefghijk' }, { videoId: 'lmnopqrstuv' }],
+        total: 2,
+        limit: params.limit,
+        offset: params.offset,
+      };
+    },
+  };
+  const channel = { channel_id: 'UCauthor1' };
+
+  assert.equal(await tab.count(channel, host), 2);
+  const page = await tab.load(channel, host, { limit: 50, offset: 0 });
+
+  assert.deepEqual(Array.from(page.videoIds), ['abcdefghijk', 'lmnopqrstuv']);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    {
+      pathname: 'channels/UCauthor1/videos',
+      params: { limit: 1, offset: 0 },
+    },
+    {
+      pathname: 'channels/UCauthor1/videos',
+      params: { limit: 50, offset: 0 },
+    },
+  ]);
 });
 
 test('entity-card preparation retains only captured chat state', async () => {

@@ -17,6 +17,7 @@ from .database import (
     SCHEMA_VERSION,
     database_status,
     initialize_database,
+    list_channel_chat_videos,
     list_video_messages,
     record_replay_observation,
     replay_states,
@@ -85,6 +86,7 @@ class YTLiveChatPlugin:
         {
             "video_live_chat_availability",
             "video_live_chat_messages",
+            "channel_live_chat_history",
             "worker_processes",
         }
     )
@@ -390,6 +392,24 @@ class YTLiveChatPlugin:
                 return 200, list_video_messages(
                     self._database_path,
                     video_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
+        channel_videos_match = re.fullmatch(r"channels/([^/]+)/videos", path)
+        if method == "GET" and channel_videos_match:
+            if self._database_path is None:
+                return 503, {"error": "YT Live Chat is not ready"}
+            author_channel_id = urllib.parse.unquote(channel_videos_match.group(1))
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", author_channel_id):
+                return 400, {"error": "Expected a YouTube author channel ID"}
+            try:
+                limit = int((query.get("limit") or ["100"])[0] or 100)
+                offset = int((query.get("offset") or ["0"])[0] or 0)
+                return 200, list_channel_chat_videos(
+                    self._database_path,
+                    author_channel_id,
                     limit=limit,
                     offset=offset,
                 )

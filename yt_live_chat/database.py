@@ -501,3 +501,74 @@ def list_video_messages(
         }
     finally:
         conn.close()
+
+
+def list_channel_chat_videos(
+    db_path: Path | str,
+    author_channel_id: str,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    normalized_channel_id = str(author_channel_id or "").strip()
+    if not normalized_channel_id:
+        raise ValueError("Author channel ID is required")
+    if limit < 1 or limit > 500:
+        raise ValueError("Video limit must be between 1 and 500")
+    if offset < 0:
+        raise ValueError("Video offset must be nonnegative")
+    conn = connect(db_path, read_only=True)
+    try:
+        total = int(
+            conn.execute(
+                """
+                SELECT COUNT(DISTINCT t.video_id)
+                FROM chat_targets t
+                JOIN chat_captures c ON c.capture_id = t.latest_capture_id
+                JOIN chat_actions a ON a.capture_id = c.capture_id
+                WHERE t.replay_status = 'captured'
+                  AND a.is_message = 1
+                  AND a.author_channel_id = ?
+                """,
+                (normalized_channel_id,),
+            ).fetchone()[0]
+        )
+        if total and offset >= total:
+            offset = ((total - 1) // limit) * limit
+        videos = [
+            {
+                "videoId": str(row["video_id"]),
+                "messageCount": int(row["message_count"]),
+                "firstOffsetMs": row["first_offset_ms"],
+                "lastOffsetMs": row["last_offset_ms"],
+                "participatedAt": str(row["participated_at"] or ""),
+            }
+            for row in conn.execute(
+                """
+                SELECT t.video_id,
+                       COUNT(*) AS message_count,
+                       MIN(a.video_offset_ms) AS first_offset_ms,
+                       MAX(a.video_offset_ms) AS last_offset_ms,
+                       COALESCE(c.broadcast_ended_at, c.completed_at) AS participated_at
+                FROM chat_targets t
+                JOIN chat_captures c ON c.capture_id = t.latest_capture_id
+                JOIN chat_actions a ON a.capture_id = c.capture_id
+                WHERE t.replay_status = 'captured'
+                  AND a.is_message = 1
+                  AND a.author_channel_id = ?
+                GROUP BY t.video_id, c.broadcast_ended_at, c.completed_at
+                ORDER BY participated_at DESC, t.video_id
+                LIMIT ? OFFSET ?
+                """,
+                (normalized_channel_id, limit, offset),
+            )
+        ]
+        return {
+            "authorChannelId": normalized_channel_id,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "videos": videos,
+        }
+    finally:
+        conn.close()

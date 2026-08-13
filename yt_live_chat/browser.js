@@ -249,8 +249,43 @@
     return panel;
   }
 
+  async function channelChatHistory(channel, host, { limit, offset }) {
+    const channelId = String(channel?.channel_id || '');
+    const payload = await host.requestJson(
+      `channels/${encodeURIComponent(channelId)}/videos`,
+      { limit, offset },
+    );
+    return {
+      videoIds: (payload.videos || [])
+        .map(video => String(video.videoId || ''))
+        .filter(Boolean),
+      total: Number(payload.total || 0),
+      limit: Number(payload.limit || limit),
+      offset: Number(payload.offset || offset),
+    };
+  }
+
+  const channelVideoTabs = browserApi.features?.channelVideoTabs === 1
+    ? [{
+      id: 'chat-history',
+      label: 'Chat history',
+      capability: 'channel_live_chat_history',
+      emptyMessage: 'No recorded chat participation found for this channel.',
+      count: async (channel, host) => {
+        const payload = await channelChatHistory(
+          channel,
+          host,
+          { limit: 1, offset: 0 },
+        );
+        return payload.total;
+      },
+      load: channelChatHistory,
+    }]
+    : [];
+
   browserApi.register({
     id: 'live_chat',
+    channelVideoTabs,
     entityCards: {
       capability: 'video_live_chat_availability',
       kinds: ['video'],

@@ -11,6 +11,7 @@ from yt_live_chat.database import (
     connect,
     database_status,
     initialize_database,
+    list_channel_chat_videos,
     list_video_messages,
     record_replay_observation,
     replay_states,
@@ -204,6 +205,60 @@ class DatabaseTests(unittest.TestCase):
             state = replay_states(database)["abcdefghijk"]
             self.assertEqual(state["replay_status"], "not_available")
             self.assertEqual(state["last_error"], "No recorded chat track")
+
+    def test_channel_chat_videos_list_latest_captures_in_broadcast_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = initialize_database(root / "live-chat.sqlite3")
+            jsonl = root / "chat.jsonl"
+            jsonl.write_text(CHAT_JSONL, encoding="utf-8")
+            parsed = parse_chat_jsonl(jsonl)
+            base_arguments = {
+                "source_bytes": len(CHAT_JSONL.encode("utf-8")),
+                "yt_dlp_version": "2026.07.04",
+                "parsed": parsed,
+                "broadcast_started_at": "2026-08-11T16:01:53Z",
+                "broadcast_status_checked_at": "2026-08-11T16:28:00Z",
+            }
+            store_replay_capture(
+                database,
+                "abcdefghijk",
+                source_path="ab/abcdefghijk/replay.jsonl",
+                source_sha256="a" * 64,
+                started_at="2026-08-11T16:30:00Z",
+                broadcast_ended_at="2026-08-11T16:27:12Z",
+                **base_arguments,
+            )
+            store_replay_capture(
+                database,
+                "lmnopqrstuv",
+                source_path="lm/lmnopqrstuv/replay.jsonl",
+                source_sha256="b" * 64,
+                started_at="2026-07-08T03:20:00Z",
+                broadcast_ended_at="2026-07-08T03:19:22Z",
+                **base_arguments,
+            )
+
+            first_page = list_channel_chat_videos(database, "UCauthor1", limit=1)
+            second_page = list_channel_chat_videos(
+                database,
+                "UCauthor1",
+                limit=1,
+                offset=1,
+            )
+
+            self.assertEqual(first_page["total"], 2)
+            self.assertEqual(first_page["videos"][0]["videoId"], "abcdefghijk")
+            self.assertEqual(first_page["videos"][0]["messageCount"], 1)
+            self.assertEqual(second_page["videos"][0]["videoId"], "lmnopqrstuv")
+            self.assertEqual(
+                list_channel_chat_videos(database, "missing")["videos"],
+                [],
+            )
+            with self.assertRaisesRegex(ValueError, "between 1 and 500"):
+                list_channel_chat_videos(database, "UCauthor1", limit=501)
+            with self.assertRaisesRegex(ValueError, "nonnegative"):
+                list_channel_chat_videos(database, "UCauthor1", offset=-1)
 
 
 if __name__ == "__main__":

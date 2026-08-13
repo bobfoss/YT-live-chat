@@ -17,6 +17,10 @@ captured `@handle` in the local URL, when the captured author channel ID is
 present in the library. The viewer does not yet synchronize with an embedded
 player.
 
+Channel detail pages also receive a **Chat history** tab. It lists canonical
+YTL videos whose latest captured chat contains messages from that channel,
+ordered by the recorded broadcast end time.
+
 ## Install for local development
 
 From this repository:
