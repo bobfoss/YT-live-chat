@@ -350,6 +350,15 @@ class YTLiveChatPlugin:
                     "description": "User-authored messages represented by stored actions.",
                 },
                 {
+                    "id": "unique-channels",
+                    "label": "Unique channels",
+                    "value": int(status["uniqueChannelCount"]),
+                    "format": "integer",
+                    "description": (
+                        "Distinct author channel IDs represented by stored chat messages."
+                    ),
+                },
+                {
                     "id": "database-size",
                     "label": "Database size",
                     "value": int(status["databaseBytes"]),

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS catalog_stats (
     replay_capture_count INTEGER NOT NULL DEFAULT 0 CHECK (replay_capture_count >= 0),
     action_count INTEGER NOT NULL DEFAULT 0 CHECK (action_count >= 0),
     message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+    unique_channel_count INTEGER NOT NULL DEFAULT 0 CHECK (unique_channel_count >= 0),
     source_byte_count INTEGER NOT NULL DEFAULT 0 CHECK (source_byte_count >= 0),
     updated_at TEXT NOT NULL
 );
@@ -57,6 +58,10 @@ CREATE TABLE IF NOT EXISTS chat_actions (
 
 CREATE INDEX IF NOT EXISTS idx_chat_actions_offset
 ON chat_actions(capture_id, video_offset_ms, sequence);
+
+CREATE INDEX IF NOT EXISTS idx_chat_actions_author_channel
+ON chat_actions(author_channel_id, capture_id)
+WHERE is_message = 1 AND author_channel_id <> '';
 
 CREATE TABLE IF NOT EXISTS chat_targets (
     video_id TEXT PRIMARY KEY,

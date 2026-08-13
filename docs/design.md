@@ -104,6 +104,7 @@ enable/disable switch. YTLC's status payload provides these zero-state metrics:
 - recorded chats;
 - JSONL chat actions;
 - chat messages;
+- unique author channels represented by chat messages;
 - database size.
 
 The counters live in the plugin database so routine Admin polling remains a

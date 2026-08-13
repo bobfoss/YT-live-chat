@@ -103,6 +103,7 @@ class PluginTests(unittest.TestCase):
                     "replay-captures",
                     "chat-actions",
                     "chat-messages",
+                    "unique-channels",
                     "database-size",
                 ],
             )

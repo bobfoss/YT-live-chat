@@ -11,7 +11,7 @@ from .jsonl import ParsedChatReplay
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 INTEGRATION_CONTRACT_VERSION = 1
 
 
@@ -75,12 +75,23 @@ def _has_application_tables(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _column_exists(
+    conn: sqlite3.Connection,
+    table_name: str,
+    column_name: str,
+) -> bool:
+    return any(
+        str(row["name"]) == column_name
+        for row in conn.execute(f"PRAGMA table_info({table_name})")
+    )
+
+
 def initialize_database(db_path: Path | str) -> Path:
     path = Path(db_path).resolve()
     conn = connect(path)
     try:
         existing_version = _schema_version(conn)
-        if existing_version not in {0, 1, SCHEMA_VERSION}:
+        if existing_version not in {0, 1, 2, SCHEMA_VERSION}:
             raise RuntimeError(
                 "Live chat database uses alpha schema "
                 f"{existing_version}; rebuild it for schema {SCHEMA_VERSION}"
@@ -91,6 +102,14 @@ def initialize_database(db_path: Path | str) -> Path:
             )
         with conn:
             conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+            if not _column_exists(conn, "catalog_stats", "unique_channel_count"):
+                conn.execute(
+                    """
+                    ALTER TABLE catalog_stats
+                    ADD COLUMN unique_channel_count INTEGER NOT NULL DEFAULT 0
+                    CHECK (unique_channel_count >= 0)
+                    """
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO sidecar_metadata(key, value) VALUES (?, ?)",
                 ("schema_version", str(SCHEMA_VERSION)),
@@ -106,6 +125,8 @@ def initialize_database(db_path: Path | str) -> Path:
                 """,
                 (utc_now(),),
             )
+            if existing_version in {1, 2}:
+                _refresh_catalog_stats(conn, utc_now())
     finally:
         conn.close()
     return path
@@ -166,6 +187,7 @@ def database_status(db_path: Path | str) -> dict[str, Any]:
                 "replayCaptureCount": int(stats["replay_capture_count"]),
                 "actionCount": int(stats["action_count"]),
                 "messageCount": int(stats["message_count"]),
+                "uniqueChannelCount": int(stats["unique_channel_count"]),
                 "sourceBytes": int(stats["source_byte_count"]),
                 "statsUpdatedAt": str(stats["updated_at"]),
             }
@@ -202,6 +224,11 @@ def _refresh_catalog_stats(conn: sqlite3.Connection, now: str) -> None:
             action_count = (SELECT COUNT(*) FROM chat_actions),
             message_count = (
               SELECT COALESCE(SUM(is_message), 0) FROM chat_actions
+            ),
+            unique_channel_count = (
+              SELECT COUNT(DISTINCT author_channel_id)
+              FROM chat_actions
+              WHERE is_message = 1 AND author_channel_id <> ''
             ),
             source_byte_count = (
               SELECT COALESCE(SUM(source_bytes), 0) FROM chat_captures
