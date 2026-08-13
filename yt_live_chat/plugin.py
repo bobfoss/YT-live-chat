@@ -15,6 +15,7 @@ from .config import config_path, ensure_config_file, load_config
 from .database import (
     INTEGRATION_CONTRACT_VERSION,
     SCHEMA_VERSION,
+    captured_video_ids,
     database_status,
     initialize_database,
     list_channel_chat_videos,
@@ -22,6 +23,7 @@ from .database import (
     record_replay_observation,
     replay_states,
     store_replay_capture,
+    sync_capture_uploader_channels,
     utc_now,
     video_replay_status,
 )
@@ -81,7 +83,9 @@ class YTLiveChatPlugin:
     plugin_name = "YT Live Chat"
     plugin_version = __version__
     plugin_api_version = 2
-    required_host_features = frozenset({"youtube_ytdlp_v1"})
+    required_host_features = frozenset(
+        {"library_video_lookup_v1", "youtube_ytdlp_v1"}
+    )
     capabilities = frozenset(
         {
             "video_live_chat_availability",
@@ -106,6 +110,12 @@ class YTLiveChatPlugin:
         ensure_config_file(own_config)
         database_path = config_path(own_config, "database")
         initialize_database(database_path)
+        capture_ids = captured_video_ids(database_path)
+        if capture_ids:
+            sync_capture_uploader_channels(
+                database_path,
+                context.library_videos(capture_ids),
+            )
         self._config = own_config
         self._database_path = database_path
 
@@ -188,6 +198,7 @@ class YTLiveChatPlugin:
                     "title": str(video.get("title") or ""),
                     "priority": 0,
                     "payload": {
+                        "uploader_channel_id": video.get("channel_id"),
                         "broadcast_started_at": video.get("broadcast_started_at"),
                         "broadcast_ended_at": video.get("broadcast_ended_at"),
                         "broadcast_status_checked_at": video.get(
@@ -276,6 +287,7 @@ class YTLiveChatPlugin:
             broadcast_status_checked_at=payload.get(
                 "broadcast_status_checked_at"
             ),
+            uploader_channel_id=str(payload.get("uploader_channel_id") or ""),
         )
         action_count = len(download.parsed.actions)
         message_count = download.parsed.message_count
@@ -352,10 +364,10 @@ class YTLiveChatPlugin:
                 {
                     "id": "unique-channels",
                     "label": "Unique channels",
-                    "value": int(status["uniqueChannelCount"]),
+                    "value": int(status["capturedChannelCount"]),
                     "format": "integer",
                     "description": (
-                        "Distinct author channel IDs represented by stored chat messages."
+                        "Distinct uploader channels among videos with captured live chat."
                     ),
                 },
                 {

@@ -5,13 +5,13 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .jsonl import ParsedChatReplay
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 INTEGRATION_CONTRACT_VERSION = 1
 
 
@@ -91,7 +91,7 @@ def initialize_database(db_path: Path | str) -> Path:
     conn = connect(path)
     try:
         existing_version = _schema_version(conn)
-        if existing_version not in {0, 1, 2, SCHEMA_VERSION}:
+        if existing_version not in {0, 1, 2, 3, SCHEMA_VERSION}:
             raise RuntimeError(
                 "Live chat database uses alpha schema "
                 f"{existing_version}; rebuild it for schema {SCHEMA_VERSION}"
@@ -110,6 +110,13 @@ def initialize_database(db_path: Path | str) -> Path:
                     CHECK (unique_channel_count >= 0)
                     """
                 )
+            if not _column_exists(conn, "chat_targets", "uploader_channel_id"):
+                conn.execute(
+                    """
+                    ALTER TABLE chat_targets
+                    ADD COLUMN uploader_channel_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
             conn.execute(
                 "INSERT OR REPLACE INTO sidecar_metadata(key, value) VALUES (?, ?)",
                 ("schema_version", str(SCHEMA_VERSION)),
@@ -125,7 +132,7 @@ def initialize_database(db_path: Path | str) -> Path:
                 """,
                 (utc_now(),),
             )
-            if existing_version in {1, 2}:
+            if existing_version in {1, 2, 3}:
                 _refresh_catalog_stats(conn, utc_now())
     finally:
         conn.close()
@@ -187,7 +194,7 @@ def database_status(db_path: Path | str) -> dict[str, Any]:
                 "replayCaptureCount": int(stats["replay_capture_count"]),
                 "actionCount": int(stats["action_count"]),
                 "messageCount": int(stats["message_count"]),
-                "uniqueChannelCount": int(stats["unique_channel_count"]),
+                "capturedChannelCount": int(stats["unique_channel_count"]),
                 "sourceBytes": int(stats["source_byte_count"]),
                 "statsUpdatedAt": str(stats["updated_at"]),
             }
@@ -226,9 +233,11 @@ def _refresh_catalog_stats(conn: sqlite3.Connection, now: str) -> None:
               SELECT COALESCE(SUM(is_message), 0) FROM chat_actions
             ),
             unique_channel_count = (
-              SELECT COUNT(DISTINCT author_channel_id)
-              FROM chat_actions
-              WHERE is_message = 1 AND author_channel_id <> ''
+              SELECT COUNT(DISTINCT uploader_channel_id)
+              FROM chat_targets
+              WHERE replay_status = 'captured'
+                AND latest_capture_id IS NOT NULL
+                AND uploader_channel_id <> ''
             ),
             source_byte_count = (
               SELECT COALESCE(SUM(source_bytes), 0) FROM chat_captures
@@ -255,6 +264,59 @@ def replay_states(db_path: Path | str) -> dict[str, dict[str, Any]]:
                 """
             )
         }
+    finally:
+        conn.close()
+
+
+def captured_video_ids(db_path: Path | str) -> tuple[str, ...]:
+    conn = connect(db_path, read_only=True)
+    try:
+        return tuple(
+            str(row["video_id"])
+            for row in conn.execute(
+                """
+                SELECT video_id
+                FROM chat_targets
+                WHERE replay_status = 'captured' AND latest_capture_id IS NOT NULL
+                ORDER BY video_id
+                """
+            )
+        )
+    finally:
+        conn.close()
+
+
+def sync_capture_uploader_channels(
+    db_path: Path | str,
+    videos: Iterable[dict[str, Any]],
+) -> int:
+    channels = {
+        str(video.get("video_id") or "").strip(): str(
+            video.get("channel_id") or ""
+        ).strip()
+        for video in videos
+        if str(video.get("video_id") or "").strip()
+        and str(video.get("channel_id") or "").strip()
+    }
+    conn = connect(db_path)
+    try:
+        with conn:
+            updated = 0
+            for video_id, channel_id in channels.items():
+                cursor = conn.execute(
+                    """
+                    UPDATE chat_targets
+                    SET uploader_channel_id = ?
+                    WHERE video_id = ?
+                      AND replay_status = 'captured'
+                      AND latest_capture_id IS NOT NULL
+                      AND uploader_channel_id <> ?
+                    """,
+                    (channel_id, video_id, channel_id),
+                )
+                updated += max(0, int(cursor.rowcount))
+            _refresh_catalog_stats(conn, utc_now())
+        return updated
     finally:
         conn.close()
 
@@ -304,6 +366,7 @@ def store_replay_capture(
     broadcast_started_at: str | None,
     broadcast_ended_at: str | None,
     broadcast_status_checked_at: str | None,
+    uploader_channel_id: str = "",
 ) -> dict[str, Any]:
     completed_at = utc_now()
     conn = connect(db_path)
@@ -384,18 +447,29 @@ def store_replay_capture(
             conn.execute(
                 """
                 INSERT INTO chat_targets(
-                  video_id, replay_status, replay_checked_at,
+                  video_id, uploader_channel_id, replay_status, replay_checked_at,
                   latest_capture_id, last_error, updated_at
                 )
-                VALUES (?, 'captured', ?, ?, '', ?)
+                VALUES (?, ?, 'captured', ?, ?, '', ?)
                 ON CONFLICT(video_id) DO UPDATE SET
+                  uploader_channel_id = CASE
+                    WHEN excluded.uploader_channel_id <> ''
+                    THEN excluded.uploader_channel_id
+                    ELSE chat_targets.uploader_channel_id
+                  END,
                   replay_status = 'captured',
                   replay_checked_at = excluded.replay_checked_at,
                   latest_capture_id = excluded.latest_capture_id,
                   last_error = '',
                   updated_at = excluded.updated_at
                 """,
-                (video_id, completed_at, capture_id, completed_at),
+                (
+                    video_id,
+                    str(uploader_channel_id or "").strip(),
+                    completed_at,
+                    capture_id,
+                    completed_at,
+                ),
             )
             _refresh_catalog_stats(conn, completed_at)
         return {"captureId": capture_id, "created": created}

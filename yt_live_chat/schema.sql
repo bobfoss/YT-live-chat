@@ -65,6 +65,7 @@ WHERE is_message = 1 AND author_channel_id <> '';
 
 CREATE TABLE IF NOT EXISTS chat_targets (
     video_id TEXT PRIMARY KEY,
+    uploader_channel_id TEXT NOT NULL DEFAULT '',
     replay_status TEXT NOT NULL CHECK (
         replay_status IN ('captured', 'not_available', 'unavailable', 'failed')
     ),

@@ -16,6 +16,7 @@ from yt_live_chat.database import (
     record_replay_observation,
     replay_states,
     store_replay_capture,
+    sync_capture_uploader_channels,
     video_replay_status,
 )
 from yt_live_chat.jsonl import parse_chat_jsonl
@@ -43,7 +44,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(status["replayCaptureCount"], 0)
             self.assertEqual(status["actionCount"], 0)
             self.assertEqual(status["messageCount"], 0)
-            self.assertEqual(status["uniqueChannelCount"], 0)
+            self.assertEqual(status["capturedChannelCount"], 0)
             self.assertGreater(status["databaseBytes"], 0)
 
     def test_database_status_reads_cached_catalog_metrics(self) -> None:
@@ -75,7 +76,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(status["replayCaptureCount"], 2)
             self.assertEqual(status["actionCount"], 64)
             self.assertEqual(status["messageCount"], 63)
-            self.assertEqual(status["uniqueChannelCount"], 12)
+            self.assertEqual(status["capturedChannelCount"], 12)
             self.assertEqual(status["sourceBytes"], 112151)
 
     def test_schema_one_database_upgrades_in_place(self) -> None:
@@ -114,7 +115,7 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertTrue(status["compatible"])
             self.assertEqual(status["schemaVersion"], SCHEMA_VERSION)
-            self.assertEqual(status["uniqueChannelCount"], 0)
+            self.assertEqual(status["capturedChannelCount"], 0)
             conn = connect(database, read_only=True)
             try:
                 tables = {
@@ -127,7 +128,7 @@ class DatabaseTests(unittest.TestCase):
                 conn.close()
             self.assertTrue({"chat_targets", "chat_captures", "chat_actions"} <= tables)
 
-    def test_schema_two_database_backfills_unique_channel_metric(self) -> None:
+    def test_schema_two_database_adds_captured_uploader_metric(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             database = initialize_database(root / "live-chat.sqlite3")
@@ -150,6 +151,9 @@ class DatabaseTests(unittest.TestCase):
             try:
                 with conn:
                     conn.execute("DROP INDEX idx_chat_actions_author_channel")
+                    conn.execute(
+                        "ALTER TABLE chat_targets DROP COLUMN uploader_channel_id"
+                    )
                     conn.execute("ALTER TABLE catalog_stats RENAME TO catalog_stats_v3")
                     conn.execute(
                         """
@@ -194,8 +198,53 @@ class DatabaseTests(unittest.TestCase):
 
             self.assertTrue(status["compatible"])
             self.assertEqual(status["schemaVersion"], SCHEMA_VERSION)
-            self.assertEqual(status["uniqueChannelCount"], 2)
+            self.assertEqual(status["capturedChannelCount"], 0)
             self.assertEqual(status["messageCount"], 2)
+            self.assertEqual(
+                sync_capture_uploader_channels(
+                    database,
+                    [
+                        {
+                            "video_id": "abcdefghijk",
+                            "channel_id": "UCstreamowner",
+                        }
+                    ],
+                ),
+                1,
+            )
+            self.assertEqual(
+                database_status(database)["capturedChannelCount"],
+                1,
+            )
+
+    def test_schema_three_database_reinterprets_unique_channel_metric(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = initialize_database(Path(temp_dir) / "live-chat.sqlite3")
+            conn = connect(database)
+            try:
+                with conn:
+                    conn.execute(
+                        "UPDATE catalog_stats SET unique_channel_count = 99"
+                    )
+                    conn.execute(
+                        "ALTER TABLE chat_targets DROP COLUMN uploader_channel_id"
+                    )
+                    conn.execute(
+                        """
+                        UPDATE sidecar_metadata
+                        SET value = '3'
+                        WHERE key = 'schema_version'
+                        """
+                    )
+            finally:
+                conn.close()
+
+            initialize_database(database)
+            status = database_status(database)
+
+            self.assertTrue(status["compatible"])
+            self.assertEqual(status["schemaVersion"], SCHEMA_VERSION)
+            self.assertEqual(status["capturedChannelCount"], 0)
 
     def test_capture_storage_is_idempotent_and_refreshes_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -214,6 +263,7 @@ class DatabaseTests(unittest.TestCase):
                 "broadcast_started_at": "2026-08-11T16:01:53Z",
                 "broadcast_ended_at": "2026-08-11T16:27:12Z",
                 "broadcast_status_checked_at": "2026-08-11T16:28:00Z",
+                "uploader_channel_id": "UCstreamowner",
             }
 
             first = store_replay_capture(
@@ -235,7 +285,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(status["replayCaptureCount"], 1)
             self.assertEqual(status["actionCount"], 3)
             self.assertEqual(status["messageCount"], 2)
-            self.assertEqual(status["uniqueChannelCount"], 2)
+            self.assertEqual(status["capturedChannelCount"], 1)
             replay = video_replay_status(database, ["abcdefghijk", "missing"])
             self.assertEqual(replay["abcdefghijk"]["replay_status"], "captured")
             self.assertEqual(replay["abcdefghijk"]["message_count"], 2)

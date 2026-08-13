@@ -20,6 +20,9 @@ class FakeContext:
         path = Path(value)
         return path if path.is_absolute() else self.root / path
 
+    def library_videos(self, video_ids):
+        return ()
+
 
 class FakePlanningContext:
     def __init__(self, videos) -> None:
@@ -76,7 +79,10 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(plugin.plugin_id, "live_chat")
             self.assertEqual(plugin.plugin_name, "YT Live Chat")
             self.assertEqual(plugin.plugin_api_version, 2)
-            self.assertEqual(plugin.required_host_features, {"youtube_ytdlp_v1"})
+            self.assertEqual(
+                plugin.required_host_features,
+                {"library_video_lookup_v1", "youtube_ytdlp_v1"},
+            )
             self.assertEqual(
                 plugin.capabilities,
                 {
@@ -177,6 +183,7 @@ class PluginTests(unittest.TestCase):
                     {
                         "video_id": "abcdefghijk",
                         "title": "Ended stream",
+                        "channel_id": "UCstreamowner",
                         "video_type": "livestream",
                         "broadcast_status": "ended",
                         "broadcast_started_at": "2026-08-11T16:01:53Z",
@@ -208,6 +215,10 @@ class PluginTests(unittest.TestCase):
 
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0]["video_id"], "abcdefghijk")
+            self.assertEqual(
+                tasks[0]["payload"]["uploader_channel_id"],
+                "UCstreamowner",
+            )
             self.assertEqual(tasks[0]["payload"]["broadcast_ended_at"], "2026-08-11T16:27:12Z")
             targeted = plugin.plan_worker(
                 "replay",
@@ -226,6 +237,7 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(status["replayCaptureCount"], 1)
             self.assertEqual(status["actionCount"], 3)
             self.assertEqual(status["messageCount"], 2)
+            self.assertEqual(status["capturedChannelCount"], 1)
             self.assertEqual(plugin.plan_worker("replay", context, {}), [])
             code, payload = plugin.handle_api(
                 "GET",

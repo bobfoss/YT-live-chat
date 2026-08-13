@@ -94,6 +94,12 @@ database.
 Timestamp links open the source video at the recorded offset; they are not an
 embedded-player synchronization contract.
 
+For uploader-level capture statistics, YTLC uses the negotiated
+`library_video_lookup_v1` host service to copy canonical uploader channel IDs
+onto its captured video targets. The plugin never opens the YTL database. The
+cached unique-channel metric counts distinct uploader IDs among targets with a
+stored capture, not chat participants.
+
 ## First-slice admin surface
 
 YT Library's existing generic Advanced Plugins panel provides the YTLC
@@ -104,7 +110,7 @@ enable/disable switch. YTLC's status payload provides these zero-state metrics:
 - recorded chats;
 - JSONL chat actions;
 - chat messages;
-- unique author channels represented by chat messages;
+- unique uploader channels among videos with captured live chat;
 - database size.
 
 The counters live in the plugin database so routine Admin polling remains a
