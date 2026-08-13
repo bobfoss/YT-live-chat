@@ -37,6 +37,9 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
     'video_live_chat_availability',
   );
   assert.equal(plugin.videoDetail.capability, 'video_live_chat_messages');
+  assert.match(source, /host\.libraryChannels\(channelIds\)/);
+  assert.match(source, /host\.ui\.localChannelHref\(authorChannelId\)/);
+  assert.match(source, /document\.createElement\(linked \? 'a' : 'strong'\)/);
 });
 
 test('entity-card preparation retains only captured chat state', async () => {

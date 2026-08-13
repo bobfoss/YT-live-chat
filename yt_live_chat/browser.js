@@ -59,7 +59,21 @@
     return { primaryMetadata: [availabilityElement(state)] };
   }
 
-  function messageRow(videoId, message) {
+  async function resolveAuthorChannels(messages, host) {
+    if (typeof host.libraryChannels !== 'function') return new Map();
+    const channelIds = [...new Set(
+      messages.map(message => String(message.authorChannelId || '')).filter(Boolean),
+    )];
+    if (!channelIds.length) return new Map();
+    try {
+      return await host.libraryChannels(channelIds);
+    } catch (error) {
+      console.error('YT Live Chat author lookup failed:', error);
+      return new Map();
+    }
+  }
+
+  function messageRow(videoId, message, authorChannels, host) {
     const row = document.createElement('div');
     row.className = 'ytlc-message';
 
@@ -76,9 +90,17 @@
 
     const body = document.createElement('div');
     body.className = 'ytlc-message-body';
-    const author = document.createElement('strong');
+    const authorChannelId = String(message.authorChannelId || '');
+    const linked = authorChannelId
+      && authorChannels.has(authorChannelId)
+      && typeof host.ui?.localChannelHref === 'function';
+    const author = document.createElement(linked ? 'a' : 'strong');
     author.className = 'ytlc-message-author';
     author.textContent = String(message.authorName || 'Unknown author');
+    if (linked) {
+      author.href = host.ui.localChannelHref(authorChannelId);
+      author.setAttribute('aria-label', `Open ${author.textContent} in YT Library`);
+    }
     const text = document.createElement('span');
     text.className = 'ytlc-message-text';
     text.textContent = String(message.messageText || '');
@@ -116,9 +138,13 @@
         `videos/${encodeURIComponent(videoId)}/messages`,
         { limit: 250, offset },
       );
+      const pageMessages = payload.messages || [];
+      const authorChannels = await resolveAuthorChannels(pageMessages, host);
       if (!append) messages.replaceChildren();
-      messages.append(...(payload.messages || []).map(message => messageRow(videoId, message)));
-      const loaded = Number(payload.offset || 0) + (payload.messages || []).length;
+      messages.append(...pageMessages.map(
+        message => messageRow(videoId, message, authorChannels, host),
+      ));
+      const loaded = Number(payload.offset || 0) + pageMessages.length;
       const total = Number(payload.total || loaded);
       panel.dataset.ytlcNextOffset = String(loaded);
       if (status instanceof HTMLElement) {

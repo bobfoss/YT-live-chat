@@ -19,7 +19,9 @@
 .ytlc-message-time { color: var(--muted); font-variant-numeric: tabular-nums; text-decoration: none; }
 .ytlc-message-time:hover { color: var(--ink); text-decoration: underline; }
 .ytlc-message-body { min-width: 0; display: grid; grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); gap: 10px; }
-.ytlc-message-author { overflow-wrap: anywhere; }
+.ytlc-message-author { color: inherit; font-weight: 700; overflow-wrap: anywhere; }
+a.ytlc-message-author { text-decoration: none; }
+a.ytlc-message-author:hover { text-decoration: underline; }
 .ytlc-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ytlc-load-more { margin-top: 8px; }
 
