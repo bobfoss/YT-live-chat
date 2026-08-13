@@ -12,9 +12,10 @@ request pacing, retries, logging, cancellation, and the persistent worker queue.
 Captured videos receive a **Recorded chat** indicator throughout YT Library's
 native video views. Their video detail page includes a collapsible, paginated
 message viewer with links that open the YouTube video at each message's recorded
-offset. Chat author names link to their local YTL channel entry when the
-captured author channel ID is present in the library. The viewer does not yet
-synchronize with an embedded player.
+offset. Chat author names link to their local YTL channel entry, using the
+captured `@handle` in the local URL, when the captured author channel ID is
+present in the library. The viewer does not yet synchronize with an embedded
+player.
 
 ## Install for local development
 

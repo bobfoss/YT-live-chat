@@ -38,7 +38,8 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
   );
   assert.equal(plugin.videoDetail.capability, 'video_live_chat_messages');
   assert.match(source, /host\.libraryChannels\(channelIds\)/);
-  assert.match(source, /host\.ui\.localChannelHref\(authorChannelId\)/);
+  assert.match(source, /\^@\[\^\\s\/@\]\+\$\/u\.test\(authorName\)/);
+  assert.match(source, /host\.ui\.localChannelHref\(authorReference\)/);
   assert.match(source, /document\.createElement\(linked \? 'a' : 'strong'\)/);
 });
 

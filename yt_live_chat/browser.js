@@ -96,9 +96,13 @@
       && typeof host.ui?.localChannelHref === 'function';
     const author = document.createElement(linked ? 'a' : 'strong');
     author.className = 'ytlc-message-author';
-    author.textContent = String(message.authorName || 'Unknown author');
+    const authorName = String(message.authorName || 'Unknown author');
+    author.textContent = authorName;
     if (linked) {
-      author.href = host.ui.localChannelHref(authorChannelId);
+      const authorReference = /^@[^\s/@]+$/u.test(authorName)
+        ? authorName
+        : authorChannelId;
+      author.href = host.ui.localChannelHref(authorReference);
       author.setAttribute('aria-label', `Open ${author.textContent} in YT Library`);
     }
     const text = document.createElement('span');
