@@ -10,6 +10,10 @@ const source = fs.readFileSync(
   path.join(__dirname, '..', 'yt_live_chat', 'browser.js'),
   'utf8',
 );
+const styles = fs.readFileSync(
+  path.join(__dirname, '..', 'yt_live_chat', 'browser.css'),
+  'utf8',
+);
 
 function registeredPlugin() {
   let plugin = null;
@@ -41,6 +45,7 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
   assert.match(source, /\^@\[\^\\s\/@\]\+\$\/u\.test\(authorName\)/);
   assert.match(source, /host\.ui\.localChannelHref\(authorReference\)/);
   assert.match(source, /document\.createElement\(linked \? 'a' : 'strong'\)/);
+  assert.match(styles, /a\.ytlc-message-author \{ color: var\(--accent\);/);
 });
 
 test('entity-card preparation retains only captured chat state', async () => {
