@@ -63,6 +63,38 @@ CREATE INDEX IF NOT EXISTS idx_chat_actions_author_channel
 ON chat_actions(author_channel_id, capture_id)
 WHERE is_message = 1 AND author_channel_id <> '';
 
+CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_search_fts USING fts5(
+    capture_id,
+    message_text,
+    content='chat_actions',
+    content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);
+
+CREATE TRIGGER IF NOT EXISTS chat_actions_search_ai
+AFTER INSERT ON chat_actions BEGIN
+    INSERT INTO chat_message_search_fts(rowid, capture_id, message_text)
+    VALUES (new.rowid, new.capture_id, new.message_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_actions_search_ad
+AFTER DELETE ON chat_actions BEGIN
+    INSERT INTO chat_message_search_fts(
+      chat_message_search_fts, rowid, capture_id, message_text
+    )
+    VALUES ('delete', old.rowid, old.capture_id, old.message_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chat_actions_search_au
+AFTER UPDATE ON chat_actions BEGIN
+    INSERT INTO chat_message_search_fts(
+      chat_message_search_fts, rowid, capture_id, message_text
+    )
+    VALUES ('delete', old.rowid, old.capture_id, old.message_text);
+    INSERT INTO chat_message_search_fts(rowid, capture_id, message_text)
+    VALUES (new.rowid, new.capture_id, new.message_text);
+END;
+
 CREATE TABLE IF NOT EXISTS chat_targets (
     video_id TEXT PRIMARY KEY,
     uploader_channel_id TEXT NOT NULL DEFAULT '',

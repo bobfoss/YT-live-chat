@@ -6,6 +6,9 @@
     return;
   }
 
+  const MESSAGE_PAGE_SIZE = 100;
+  const MESSAGE_SCROLL_THRESHOLD = 220;
+
   function formatCount(value, singular, plural = `${singular}s`) {
     const count = Math.max(0, Number(value || 0));
     return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
@@ -73,7 +76,7 @@
     }
   }
 
-  function messageRow(videoId, message, authorChannels, host) {
+  function messageRow(videoId, message, authorChannels, host, highlight = false) {
     const row = document.createElement('div');
     row.className = 'ytlc-message';
 
@@ -107,7 +110,14 @@
     }
     const text = document.createElement('span');
     text.className = 'ytlc-message-text';
-    text.textContent = String(message.messageText || '');
+    if (
+      highlight
+      && typeof host.ui?.searchHighlight?.snippetHtml === 'function'
+    ) {
+      text.innerHTML = host.ui.searchHighlight.snippetHtml(String(message.snippet || ''));
+    } else {
+      text.textContent = String(message.messageText || '');
+    }
     body.append(author, text);
     row.append(timestamp, body);
     return row;
@@ -126,44 +136,91 @@
     if (content instanceof HTMLElement) content.hidden = !expanded;
   }
 
-  async function loadMessagePage(panel, host, append) {
+  function resetMessageView(panel) {
+    const generation = Number(panel.dataset.ytlcLoadGeneration || 0) + 1;
+    panel.dataset.ytlcLoadGeneration = String(generation);
+    panel.dataset.ytlcLoading = 'false';
+    panel.dataset.ytlcNextOffset = '0';
+    panel.dataset.ytlcTotal = '';
+    panel.querySelector('.ytlc-messages')?.replaceChildren();
+    const status = panel.querySelector('.ytlc-message-status');
+    if (status instanceof HTMLElement) status.textContent = '';
+    const loading = panel.querySelector('[data-ytlc-loading]');
+    if (loading instanceof HTMLElement) loading.hidden = true;
+    const scroll = panel.querySelector('[data-ytlc-scroll]');
+    if (scroll instanceof HTMLElement) scroll.scrollTop = 0;
+  }
+
+  function loadNextMessagePageIfNeeded(panel, host) {
+    const scroll = panel.querySelector('[data-ytlc-scroll]');
+    if (!(scroll instanceof HTMLElement)) return;
     if (panel.dataset.ytlcLoading === 'true') return;
+    const nextOffset = Number(panel.dataset.ytlcNextOffset || 0);
+    const total = Number(panel.dataset.ytlcTotal || 0);
+    if (nextOffset >= total) return;
+    const remaining = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+    if (remaining < MESSAGE_SCROLL_THRESHOLD) void loadMessagePage(panel, host);
+  }
+
+  async function loadMessagePage(panel, host) {
     const videoId = panel.dataset.ytlcVideo || '';
     const messages = panel.querySelector('.ytlc-messages');
     const status = panel.querySelector('.ytlc-message-status');
-    const button = panel.querySelector('[data-ytlc-more]');
+    const loading = panel.querySelector('[data-ytlc-loading]');
     if (!videoId || !(messages instanceof HTMLElement)) return;
-    const offset = append ? Number(panel.dataset.ytlcNextOffset || 0) : 0;
+    if (panel.dataset.ytlcLoading === 'true') return;
+    const offset = Number(panel.dataset.ytlcNextOffset || 0);
+    const knownTotal = panel.dataset.ytlcTotal;
+    if (knownTotal !== '' && offset >= Number(knownTotal || 0)) return;
+    const generation = Number(panel.dataset.ytlcLoadGeneration || 0);
+    const searchQuery = String(panel.dataset.ytlcQuery || '').trim();
     panel.dataset.ytlcLoading = 'true';
-    if (button instanceof HTMLButtonElement) button.disabled = true;
-    if (status instanceof HTMLElement) status.textContent = 'Loading recorded chat...';
+    if (loading instanceof HTMLElement) loading.hidden = false;
+    if (offset === 0 && status instanceof HTMLElement) {
+      status.textContent = searchQuery
+        ? 'Searching recorded chat...'
+        : 'Loading recorded chat...';
+    }
     try {
       const payload = await host.requestJson(
-        `videos/${encodeURIComponent(videoId)}/messages`,
-        { limit: 250, offset },
+        `videos/${encodeURIComponent(videoId)}/messages${searchQuery ? '/search' : ''}`,
+        searchQuery
+          ? { limit: MESSAGE_PAGE_SIZE, offset, q: searchQuery }
+          : { limit: MESSAGE_PAGE_SIZE, offset },
       );
-      const pageMessages = payload.messages || [];
+      if (generation !== Number(panel.dataset.ytlcLoadGeneration || 0)) return;
+      const pageMessages = searchQuery ? (payload.matches || []) : (payload.messages || []);
       const authorChannels = await resolveAuthorChannels(pageMessages, host);
-      if (!append) messages.replaceChildren();
+      if (generation !== Number(panel.dataset.ytlcLoadGeneration || 0)) return;
+      if (offset === 0) messages.replaceChildren();
       messages.append(...pageMessages.map(
-        message => messageRow(videoId, message, authorChannels, host),
+        message => messageRow(videoId, message, authorChannels, host, Boolean(searchQuery)),
       ));
       const loaded = Number(payload.offset || 0) + pageMessages.length;
       const total = Number(payload.total || loaded);
       panel.dataset.ytlcNextOffset = String(loaded);
+      panel.dataset.ytlcTotal = String(total);
       if (status instanceof HTMLElement) {
-        status.textContent = total
-          ? `${loaded.toLocaleString()} of ${total.toLocaleString()} messages`
-          : 'This capture contains no user messages.';
+        if (searchQuery && total === 0) {
+          status.textContent = `No matches for “${searchQuery}”`;
+        } else if (total === 0) {
+          status.textContent = 'This capture contains no user messages.';
+        } else {
+          const unit = searchQuery ? (total === 1 ? 'match' : 'matches') : 'messages';
+          status.textContent = `${loaded.toLocaleString()} of ${total.toLocaleString()} ${unit}`;
+        }
       }
-      if (button instanceof HTMLButtonElement) button.hidden = loaded >= total;
+      requestAnimationFrame(() => loadNextMessagePageIfNeeded(panel, host));
     } catch (error) {
+      if (generation !== Number(panel.dataset.ytlcLoadGeneration || 0)) return;
       if (status instanceof HTMLElement) {
         status.textContent = error instanceof Error ? error.message : String(error);
       }
     } finally {
-      panel.dataset.ytlcLoading = 'false';
-      if (button instanceof HTMLButtonElement) button.disabled = false;
+      if (generation === Number(panel.dataset.ytlcLoadGeneration || 0)) {
+        panel.dataset.ytlcLoading = 'false';
+        if (loading instanceof HTMLElement) loading.hidden = true;
+      }
     }
   }
 
@@ -215,35 +272,97 @@
     content.id = contentId;
     content.dataset.ytlcContent = '';
     content.hidden = true;
+    const search = document.createElement('form');
+    search.className = 'ytlc-message-search';
+    search.dataset.ytlcSearch = '';
+    search.setAttribute('role', 'search');
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.dataset.ytlcSearchInput = '';
+    searchInput.setAttribute('aria-label', 'Search recorded chat');
+    searchInput.placeholder = 'Search recorded chat';
+    searchInput.autocomplete = 'off';
+    const searchButton = document.createElement('button');
+    searchButton.type = 'submit';
+    searchButton.textContent = 'Search';
+    const clearSearch = document.createElement('button');
+    clearSearch.type = 'button';
+    clearSearch.dataset.ytlcSearchClear = '';
+    clearSearch.textContent = 'Clear';
+    clearSearch.hidden = true;
+    search.append(searchInput, searchButton, clearSearch);
     const status = document.createElement('div');
     status.className = 'ytlc-message-status';
     status.setAttribute('aria-live', 'polite');
+    const scroll = document.createElement('div');
+    scroll.className = 'ytlc-message-scroll';
+    scroll.dataset.ytlcScroll = '';
+    scroll.setAttribute('role', 'region');
+    scroll.setAttribute('aria-label', 'Recorded chat messages');
+    scroll.tabIndex = 0;
     const messages = document.createElement('div');
     messages.className = 'ytlc-messages';
-    const loadMore = document.createElement('button');
-    loadMore.type = 'button';
-    loadMore.className = 'ytlc-load-more';
-    loadMore.dataset.ytlcMore = '';
-    loadMore.textContent = 'Load more';
-    loadMore.hidden = true;
-    content.append(status, messages, loadMore);
+    const loading = document.createElement('div');
+    loading.className = 'ytlc-message-loading';
+    loading.dataset.ytlcLoading = '';
+    loading.textContent = 'Loading…';
+    loading.hidden = true;
+    scroll.append(messages, loading);
+    content.append(search, status, scroll);
     panel.append(heading, content);
+
+    scroll.addEventListener('scroll', () => {
+      loadNextMessagePageIfNeeded(panel, host);
+    });
+
+    panel.addEventListener('submit', event => {
+      const form = event.target.closest('[data-ytlc-search]');
+      if (!(form instanceof HTMLFormElement)) return;
+      event.preventDefault();
+      const input = form.querySelector('[data-ytlc-search-input]');
+      const query = input instanceof HTMLInputElement ? input.value.trim() : '';
+      if (input instanceof HTMLInputElement) input.value = query;
+      panel.dataset.ytlcQuery = query;
+      const clear = form.querySelector('[data-ytlc-search-clear]');
+      if (clear instanceof HTMLButtonElement) clear.hidden = !query;
+      resetMessageView(panel);
+      void loadMessagePage(panel, host);
+    });
+
+    panel.addEventListener('input', event => {
+      const input = event.target.closest('[data-ytlc-search-input]');
+      if (!(input instanceof HTMLInputElement)) return;
+      const clear = panel.querySelector('[data-ytlc-search-clear]');
+      if (clear instanceof HTMLButtonElement) clear.hidden = !input.value;
+      if (!input.value && panel.dataset.ytlcQuery) {
+        panel.dataset.ytlcQuery = '';
+        resetMessageView(panel);
+        void loadMessagePage(panel, host);
+      }
+    });
 
     panel.addEventListener('click', event => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      const clear = target.closest('[data-ytlc-search-clear]');
+      if (clear instanceof HTMLButtonElement) {
+        const input = panel.querySelector('[data-ytlc-search-input]');
+        if (input instanceof HTMLInputElement) input.value = '';
+        clear.hidden = true;
+        panel.dataset.ytlcQuery = '';
+        resetMessageView(panel);
+        void loadMessagePage(panel, host);
+        return;
+      }
       const toggleButton = target.closest('[data-ytlc-toggle]');
       if (toggleButton instanceof HTMLButtonElement) {
         const expanded = toggleButton.getAttribute('aria-expanded') === 'true';
         setExpanded(panel, !expanded);
         if (!expanded && !panel.querySelector('.ytlc-message')) {
-          void loadMessagePage(panel, host, false);
+          resetMessageView(panel);
+          void loadMessagePage(panel, host);
         }
         return;
-      }
-      const moreButton = target.closest('[data-ytlc-more]');
-      if (moreButton instanceof HTMLButtonElement) {
-        void loadMessagePage(panel, host, true);
       }
     });
     return panel;

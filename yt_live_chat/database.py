@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,8 +12,19 @@ from .jsonl import ParsedChatReplay
 
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 INTEGRATION_CONTRACT_VERSION = 1
+SEARCH_TOKEN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
+MAX_MESSAGE_PAGE_SIZE = 500
+
+
+def _fts_query(value: str) -> str:
+    tokens = SEARCH_TOKEN.findall(value)
+    if not tokens:
+        raise ValueError("Search query must contain at least one word or number")
+    return " AND ".join(
+        f'"{token.replace(chr(34), chr(34) * 2)}"*' for token in tokens
+    )
 
 
 def utc_now() -> str:
@@ -91,7 +103,7 @@ def initialize_database(db_path: Path | str) -> Path:
     conn = connect(path)
     try:
         existing_version = _schema_version(conn)
-        if existing_version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+        if existing_version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
             raise RuntimeError(
                 "Live chat database uses alpha schema "
                 f"{existing_version}; rebuild it for schema {SCHEMA_VERSION}"
@@ -100,7 +112,20 @@ def initialize_database(db_path: Path | str) -> Path:
             raise RuntimeError(
                 "Live chat database contains an unversioned schema; rebuild it before use"
             )
+        rebuild_message_search = existing_version in {1, 2, 3, 4} or (
+            existing_version == SCHEMA_VERSION
+            and not _column_exists(
+                conn,
+                "chat_message_search_fts",
+                "capture_id",
+            )
+        )
         with conn:
+            if rebuild_message_search:
+                conn.execute("DROP TRIGGER IF EXISTS chat_actions_search_ai")
+                conn.execute("DROP TRIGGER IF EXISTS chat_actions_search_ad")
+                conn.execute("DROP TRIGGER IF EXISTS chat_actions_search_au")
+                conn.execute("DROP TABLE IF EXISTS chat_message_search_fts")
             conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
             if not _column_exists(conn, "catalog_stats", "unique_channel_count"):
                 conn.execute(
@@ -115,6 +140,13 @@ def initialize_database(db_path: Path | str) -> Path:
                     """
                     ALTER TABLE chat_targets
                     ADD COLUMN uploader_channel_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
+            if rebuild_message_search:
+                conn.execute(
+                    """
+                    INSERT INTO chat_message_search_fts(chat_message_search_fts)
+                    VALUES ('rebuild')
                     """
                 )
             conn.execute(
@@ -132,7 +164,7 @@ def initialize_database(db_path: Path | str) -> Path:
                 """,
                 (utc_now(),),
             )
-            if existing_version in {1, 2, 3}:
+            if existing_version in {1, 2, 3, 4}:
                 _refresh_catalog_stats(conn, utc_now())
     finally:
         conn.close()
@@ -532,8 +564,10 @@ def list_video_messages(
     normalized_video_id = str(video_id or "").strip()
     if not normalized_video_id:
         raise ValueError("Video ID is required")
-    if limit < 1 or limit > 500:
-        raise ValueError("Message limit must be between 1 and 500")
+    if limit < 1 or limit > MAX_MESSAGE_PAGE_SIZE:
+        raise ValueError(
+            f"Message limit must be between 1 and {MAX_MESSAGE_PAGE_SIZE}"
+        )
     if offset < 0:
         raise ValueError("Message offset must be nonnegative")
     conn = connect(db_path, read_only=True)
@@ -599,6 +633,114 @@ def list_video_messages(
             "limit": limit,
             "offset": offset,
             "messages": messages,
+        }
+    finally:
+        conn.close()
+
+
+def search_video_messages(
+    db_path: Path | str,
+    video_id: str,
+    query: str,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> dict[str, Any]:
+    normalized_video_id = str(video_id or "").strip()
+    if not normalized_video_id:
+        raise ValueError("Video ID is required")
+    if limit < 1 or limit > MAX_MESSAGE_PAGE_SIZE:
+        raise ValueError(
+            f"Message limit must be between 1 and {MAX_MESSAGE_PAGE_SIZE}"
+        )
+    if offset < 0:
+        raise ValueError("Message offset must be nonnegative")
+    normalized_query = str(query or "").strip()
+    match_query = _fts_query(normalized_query)
+    conn = connect(db_path, read_only=True)
+    try:
+        capture = conn.execute(
+            """
+            SELECT c.capture_id, c.completed_at
+            FROM chat_targets t
+            JOIN chat_captures c ON c.capture_id = t.latest_capture_id
+            WHERE t.video_id = ? AND t.replay_status = 'captured'
+            """,
+            (normalized_video_id,),
+        ).fetchone()
+        if capture is None:
+            return {
+                "videoId": normalized_video_id,
+                "captureId": None,
+                "completedAt": "",
+                "query": normalized_query,
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "matches": [],
+            }
+        capture_id = int(capture["capture_id"])
+        scoped_match_query = (
+            f'capture_id : "{capture_id}" AND message_text : ({match_query})'
+        )
+        total = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM chat_message_search_fts
+                JOIN chat_actions a ON a.rowid = chat_message_search_fts.rowid
+                WHERE chat_message_search_fts MATCH ?
+                  AND a.capture_id = ?
+                  AND a.is_message = 1
+                """,
+                (scoped_match_query, capture_id),
+            ).fetchone()[0]
+        )
+        matches = [
+            {
+                "sequence": int(row["sequence"]),
+                "offsetMs": row["video_offset_ms"],
+                "actionType": str(row["action_type"]),
+                "rendererType": str(row["renderer_type"]),
+                "messageId": str(row["message_id"]),
+                "authorChannelId": str(row["author_channel_id"]),
+                "authorName": str(row["author_name"]),
+                "messageText": str(row["message_text"]),
+                "snippet": str(row["snippet"]),
+            }
+            for row in conn.execute(
+                """
+                SELECT a.sequence, a.video_offset_ms, a.action_type,
+                       a.renderer_type, a.message_id, a.author_channel_id,
+                       a.author_name, a.message_text,
+                       snippet(
+                         chat_message_search_fts,
+                         1,
+                         '<mark>',
+                         '</mark>',
+                         '…',
+                         36
+                       ) AS snippet
+                FROM chat_message_search_fts
+                JOIN chat_actions a ON a.rowid = chat_message_search_fts.rowid
+                WHERE chat_message_search_fts MATCH ?
+                  AND a.capture_id = ?
+                  AND a.is_message = 1
+                ORDER BY a.sequence
+                LIMIT ? OFFSET ?
+                """,
+                (scoped_match_query, capture_id, limit, offset),
+            )
+        ]
+        return {
+            "videoId": normalized_video_id,
+            "captureId": capture_id,
+            "completedAt": str(capture["completed_at"]),
+            "query": normalized_query,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "matches": matches,
         }
     finally:
         conn.close()

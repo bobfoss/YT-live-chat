@@ -41,6 +41,7 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
     'video_live_chat_availability',
   );
   assert.equal(plugin.videoDetail.capability, 'video_live_chat_messages');
+  assert.equal(plugin.search, undefined);
   assert.equal(plugin.channelVideoTabs[0].label, 'Chat history');
   assert.equal(
     plugin.channelVideoTabs[0].capability,
@@ -50,7 +51,15 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
   assert.match(source, /\^@\[\^\\s\/@\]\+\$\/u\.test\(authorName\)/);
   assert.match(source, /host\.ui\.localChannelHref\(authorReference\)/);
   assert.match(source, /document\.createElement\(linked \? 'a' : 'strong'\)/);
+  assert.match(source, /MESSAGE_SCROLL_THRESHOLD/);
+  assert.match(source, /dataset\.ytlcScroll/);
+  assert.match(source, /dataset\.ytlcSearchInput/);
+  assert.match(source, /messages\$\{searchQuery \? '\/search' : ''\}/);
+  assert.doesNotMatch(source, /data\.ytlcMore/);
   assert.match(styles, /a\.ytlc-message-author \{ color: var\(--accent\);/);
+  assert.match(styles, /\.ytlc-message-scroll \{[^}]*overflow: auto/);
+  assert.match(styles, /\.ytlc-message-search/);
+  assert.doesNotMatch(styles, /\.ytlc-load-more/);
 });
 
 test('channel chat-history tab counts and loads participated video ids', async () => {

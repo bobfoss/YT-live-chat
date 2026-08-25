@@ -22,6 +22,7 @@ from .database import (
     list_video_messages,
     record_replay_observation,
     replay_states,
+    search_video_messages,
     store_replay_capture,
     sync_capture_uploader_channels,
     utc_now,
@@ -90,6 +91,7 @@ class YTLiveChatPlugin:
         {
             "video_live_chat_availability",
             "video_live_chat_messages",
+            "video_live_chat_search",
             "channel_live_chat_history",
             "worker_processes",
         }
@@ -413,6 +415,25 @@ class YTLiveChatPlugin:
                 return 200, list_video_messages(
                     self._database_path,
                     video_id,
+                    limit=limit,
+                    offset=offset,
+                )
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
+        message_search_match = re.fullmatch(r"videos/([^/]+)/messages/search", path)
+        if method == "GET" and message_search_match:
+            if self._database_path is None:
+                return 503, {"error": "YT Live Chat is not ready"}
+            video_id = urllib.parse.unquote(message_search_match.group(1))
+            if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+                return 400, {"error": "Expected an 11-character YouTube video ID"}
+            try:
+                limit = int((query.get("limit") or ["100"])[0] or 100)
+                offset = int((query.get("offset") or ["0"])[0] or 0)
+                return 200, search_video_messages(
+                    self._database_path,
+                    video_id,
+                    (query.get("q") or [""])[0],
                     limit=limit,
                     offset=offset,
                 )

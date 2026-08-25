@@ -88,6 +88,7 @@ class PluginTests(unittest.TestCase):
                 {
                     "video_live_chat_availability",
                     "video_live_chat_messages",
+                    "video_live_chat_search",
                     "channel_live_chat_history",
                     "worker_processes",
                 },
@@ -135,6 +136,8 @@ class PluginTests(unittest.TestCase):
             self.assertIn(b"entityCards: {", browser_script)
             self.assertIn(b"videoDetail: {", browser_script)
             self.assertIn(b"video_live_chat_messages", browser_script)
+            self.assertIn(b"dataset.ytlcScroll", browser_script)
+            self.assertIn(b"dataset.ytlcSearchInput", browser_script)
             self.assertIn(b"channelVideoTabs", browser_script)
             code, payload = plugin.handle_api(
                 "GET",
@@ -146,6 +149,10 @@ class PluginTests(unittest.TestCase):
             content_type, browser_style = plugin.handle_browser_asset("browser.css")
             self.assertEqual(content_type, "text/css; charset=utf-8")
             self.assertIn(b".ytlc-panel", browser_style)
+            self.assertIn(b".ytlc-message-scroll", browser_style)
+            self.assertIn(b"overflow: auto", browser_style)
+            self.assertIn(b".ytlc-message-search", browser_style)
+            self.assertNotIn(b".ytlc-load-more", browser_style)
             with self.assertRaises(KeyError):
                 plugin.handle_browser_asset("missing.js")
 
@@ -261,6 +268,14 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertEqual(messages["total"], 2)
             self.assertEqual(messages["messages"][0]["messageText"], ":heart:")
+            code, matches = plugin.handle_api(
+                "GET",
+                "videos/abcdefghijk/messages/search",
+                {"q": ["morn"], "limit": ["1"], "offset": ["0"]},
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(matches["total"], 1)
+            self.assertIn("<mark>morning</mark>", matches["matches"][0]["snippet"])
             code, invalid = plugin.handle_api(
                 "GET",
                 "videos/invalid/messages",

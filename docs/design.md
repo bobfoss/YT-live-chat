@@ -8,9 +8,9 @@ broadcast ends. The source emitted by yt-dlp is newline-delimited JSON actions
 (JSONL/NDJSON), despite its `.json` filename suffix.
 
 The recorded-chat implementation provides a bounded worker for ended
-livestreams plus a native-card availability indicator and paginated video-detail
-message viewer. Active-broadcast capture, synchronized playback, and chat search
-remain later milestones.
+livestreams plus a native-card availability indicator and bounded video-detail
+message viewer with incremental loading and capture-scoped search.
+Active-broadcast capture and synchronized playback remain later milestones.
 
 ## Ownership boundary
 
@@ -83,7 +83,11 @@ statistics.
 
 The browser integration is plugin-owned. It uses YT Library's generic
 `entityCards` and `videoDetail` contracts, queries at most 500 video identities
-per availability request, and retrieves at most 500 user messages per page.
+per availability request, and retrieves at most 500 user messages per API page.
+The viewer requests 100-message pages near the end of its resizable scroll
+viewport. A plugin-owned FTS5 index supplies capture-scoped prefix search with
+bounded pages and safe host-rendered match highlighting. YTLC does not register
+an omni-search provider, field, filter, preset, or result presentation.
 
 YTLC advertises the `channel_live_chat_history` capability and contributes a
 browser `channelVideoTabs` entry. Its count and page requests query only the

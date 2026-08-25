@@ -15,6 +15,7 @@ from yt_live_chat.database import (
     list_video_messages,
     record_replay_observation,
     replay_states,
+    search_video_messages,
     store_replay_capture,
     sync_capture_uploader_channels,
     video_replay_status,
@@ -126,7 +127,15 @@ class DatabaseTests(unittest.TestCase):
                 }
             finally:
                 conn.close()
-            self.assertTrue({"chat_targets", "chat_captures", "chat_actions"} <= tables)
+            self.assertTrue(
+                {
+                    "chat_targets",
+                    "chat_captures",
+                    "chat_actions",
+                    "chat_message_search_fts",
+                }
+                <= tables
+            )
 
     def test_schema_two_database_adds_captured_uploader_metric(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -246,6 +255,109 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(status["schemaVersion"], SCHEMA_VERSION)
             self.assertEqual(status["capturedChannelCount"], 0)
 
+    def test_schema_four_database_backfills_message_search_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = initialize_database(root / "live-chat.sqlite3")
+            jsonl = root / "chat.jsonl"
+            jsonl.write_text(CHAT_JSONL, encoding="utf-8")
+            store_replay_capture(
+                database,
+                "abcdefghijk",
+                source_path="ab/abcdefghijk/replay.jsonl",
+                source_sha256="a" * 64,
+                source_bytes=len(CHAT_JSONL.encode("utf-8")),
+                yt_dlp_version="2026.07.04",
+                parsed=parse_chat_jsonl(jsonl),
+                started_at="2026-08-11T16:30:00Z",
+                broadcast_started_at="2026-08-11T16:01:53Z",
+                broadcast_ended_at="2026-08-11T16:27:12Z",
+                broadcast_status_checked_at="2026-08-11T16:28:00Z",
+            )
+            conn = connect(database)
+            try:
+                with conn:
+                    conn.execute("DROP TRIGGER chat_actions_search_ai")
+                    conn.execute("DROP TRIGGER chat_actions_search_ad")
+                    conn.execute("DROP TRIGGER chat_actions_search_au")
+                    conn.execute("DROP TABLE chat_message_search_fts")
+                    conn.execute(
+                        """
+                        UPDATE sidecar_metadata
+                        SET value = '4'
+                        WHERE key = 'schema_version'
+                        """
+                    )
+            finally:
+                conn.close()
+
+            initialize_database(database)
+            results = search_video_messages(database, "abcdefghijk", "morn")
+
+            self.assertEqual(database_status(database)["schemaVersion"], SCHEMA_VERSION)
+            self.assertEqual(results["total"], 1)
+            self.assertIn("<mark>morning</mark>", results["matches"][0]["snippet"])
+
+    def test_schema_five_rebuilds_legacy_unscoped_message_index(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database = initialize_database(root / "live-chat.sqlite3")
+            jsonl = root / "chat.jsonl"
+            jsonl.write_text(CHAT_JSONL, encoding="utf-8")
+            store_replay_capture(
+                database,
+                "abcdefghijk",
+                source_path="ab/abcdefghijk/replay.jsonl",
+                source_sha256="a" * 64,
+                source_bytes=len(CHAT_JSONL.encode("utf-8")),
+                yt_dlp_version="2026.07.04",
+                parsed=parse_chat_jsonl(jsonl),
+                started_at="2026-08-11T16:30:00Z",
+                broadcast_started_at="2026-08-11T16:01:53Z",
+                broadcast_ended_at="2026-08-11T16:27:12Z",
+                broadcast_status_checked_at="2026-08-11T16:28:00Z",
+            )
+            conn = connect(database)
+            try:
+                with conn:
+                    conn.execute("DROP TRIGGER chat_actions_search_ai")
+                    conn.execute("DROP TRIGGER chat_actions_search_ad")
+                    conn.execute("DROP TRIGGER chat_actions_search_au")
+                    conn.execute("DROP TABLE chat_message_search_fts")
+                    conn.execute(
+                        """
+                        CREATE VIRTUAL TABLE chat_message_search_fts USING fts5(
+                          message_text,
+                          content='chat_actions',
+                          content_rowid='rowid'
+                        )
+                        """
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO chat_message_search_fts(chat_message_search_fts)
+                        VALUES ('rebuild')
+                        """
+                    )
+            finally:
+                conn.close()
+
+            initialize_database(database)
+            conn = connect(database, read_only=True)
+            try:
+                search_columns = {
+                    str(row["name"])
+                    for row in conn.execute(
+                        "PRAGMA table_info(chat_message_search_fts)"
+                    )
+                }
+            finally:
+                conn.close()
+            results = search_video_messages(database, "abcdefghijk", "morn")
+
+            self.assertIn("capture_id", search_columns)
+            self.assertEqual(results["total"], 1)
+
     def test_capture_storage_is_idempotent_and_refreshes_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -308,6 +420,27 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(first_page["messages"][0]["authorName"], "First author")
             self.assertEqual(first_page["messages"][0]["offsetMs"], 20485)
             self.assertEqual(second_page["messages"][0]["messageText"], ":heart:")
+            search_page = search_video_messages(
+                database,
+                "abcdefghijk",
+                "good morn",
+                limit=1,
+            )
+            self.assertEqual(search_page["captureId"], first["captureId"])
+            self.assertEqual(search_page["query"], "good morn")
+            self.assertEqual(search_page["total"], 1)
+            self.assertEqual(search_page["matches"][0]["authorName"], "First author")
+            self.assertIn(
+                "<mark>morning</mark>",
+                search_page["matches"][0]["snippet"],
+            )
+            no_search_matches = search_video_messages(
+                database,
+                "abcdefghijk",
+                "missing",
+            )
+            self.assertEqual(no_search_matches["total"], 0)
+            self.assertEqual(no_search_matches["matches"], [])
             missing_messages = list_video_messages(database, "missing")
             self.assertIsNone(missing_messages["captureId"])
             self.assertEqual(missing_messages["messages"], [])
@@ -315,6 +448,8 @@ class DatabaseTests(unittest.TestCase):
                 list_video_messages(database, "abcdefghijk", limit=501)
             with self.assertRaisesRegex(ValueError, "nonnegative"):
                 list_video_messages(database, "abcdefghijk", offset=-1)
+            with self.assertRaisesRegex(ValueError, "at least one word"):
+                search_video_messages(database, "abcdefghijk", "---")
 
     def test_non_capture_replay_observations_remain_plugin_owned(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

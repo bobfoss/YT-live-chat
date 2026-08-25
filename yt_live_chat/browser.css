@@ -4,18 +4,21 @@
 .ytlc-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .ytlc-panel-heading h3 { margin: 0; font-size: 20px; }
 .ytlc-panel-summary { margin-top: 4px; color: var(--muted); font-size: 13px; }
-.ytlc-chat-toggle,
-.ytlc-load-more { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 6px 9px; font: inherit; cursor: pointer; }
+.ytlc-chat-toggle { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 6px 9px; font: inherit; cursor: pointer; }
 .ytlc-chat-toggle { display: inline-flex; align-items: center; gap: 7px; }
-.ytlc-chat-toggle:hover:not(:disabled),
-.ytlc-load-more:hover:not(:disabled) { background: var(--accent-soft); }
-.ytlc-chat-toggle:disabled,
-.ytlc-load-more:disabled { opacity: .5; cursor: default; }
+.ytlc-chat-toggle:hover:not(:disabled) { background: var(--accent-soft); }
+.ytlc-chat-toggle:disabled { opacity: .5; cursor: default; }
 .ytlc-toggle-chevron { width: 16px; height: 16px; flex: 0 0 auto; transition: transform 160ms ease; }
 .ytlc-chat-toggle[aria-expanded="true"] .ytlc-toggle-chevron { transform: rotate(90deg); }
+.ytlc-message-search { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.ytlc-message-search input { min-width: 180px; max-width: 420px; flex: 1 1 320px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 9px; font: inherit; }
+.ytlc-message-search button { border: 1px solid var(--line); background: var(--panel); color: var(--ink); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
+.ytlc-message-search button:hover:not(:disabled) { background: var(--accent-soft); }
 .ytlc-message-status { min-height: 18px; margin-top: 8px; color: var(--muted); font-size: 12px; }
-.ytlc-messages { display: grid; margin-top: 4px; }
+.ytlc-message-scroll { height: clamp(260px, 52vh, 560px); min-height: 180px; overflow: auto; resize: vertical; scrollbar-gutter: stable; border: 1px solid var(--line); border-radius: 6px; padding: 0 10px 8px; }
+.ytlc-messages { display: grid; }
 .ytlc-message { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; line-height: 1.45; }
+.ytlc-message:first-child { border-top: 0; }
 .ytlc-message-time { color: var(--muted); font-variant-numeric: tabular-nums; text-decoration: none; }
 .ytlc-message-time:hover { color: var(--ink); text-decoration: underline; }
 .ytlc-message-body { min-width: 0; display: grid; grid-template-columns: minmax(100px, max-content) minmax(0, 1fr); gap: 10px; }
@@ -23,10 +26,12 @@
 a.ytlc-message-author { color: var(--accent); text-decoration: none; }
 a.ytlc-message-author:hover { text-decoration: underline; }
 .ytlc-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ytlc-load-more { margin-top: 8px; }
+.ytlc-message-loading { padding: 10px 0 2px; color: var(--muted); font-size: 12px; text-align: center; }
 
 @media (max-width: 760px) {
   .ytlc-panel-heading { display: grid; }
   .ytlc-chat-toggle { justify-self: start; }
+  .ytlc-message-search { align-items: stretch; flex-wrap: wrap; }
+  .ytlc-message-search input { max-width: none; flex-basis: 100%; }
   .ytlc-message-body { grid-template-columns: 1fr; gap: 2px; }
 }
