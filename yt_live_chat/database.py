@@ -16,6 +16,19 @@ SCHEMA_VERSION = 5
 INTEGRATION_CONTRACT_VERSION = 1
 SEARCH_TOKEN = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", re.UNICODE)
 MAX_MESSAGE_PAGE_SIZE = 500
+_CHANNEL_CHAT_PARTICIPATION_CTE = """
+    WITH participation AS MATERIALIZED (
+        SELECT capture_id,
+               COUNT(*) AS message_count,
+               MIN(video_offset_ms) AS first_offset_ms,
+               MAX(video_offset_ms) AS last_offset_ms
+        FROM chat_actions INDEXED BY idx_chat_actions_author_channel
+        WHERE is_message = 1
+          AND author_channel_id <> ''
+          AND author_channel_id = ?
+        GROUP BY capture_id
+    )
+"""
 
 
 def _fts_query(value: str) -> str:
@@ -764,14 +777,13 @@ def list_channel_chat_videos(
     try:
         total = int(
             conn.execute(
-                """
-                SELECT COUNT(DISTINCT t.video_id)
-                FROM chat_targets t
-                JOIN chat_captures c ON c.capture_id = t.latest_capture_id
-                JOIN chat_actions a ON a.capture_id = c.capture_id
-                WHERE t.replay_status = 'captured'
-                  AND a.is_message = 1
-                  AND a.author_channel_id = ?
+                _CHANNEL_CHAT_PARTICIPATION_CTE
+                + """
+                    SELECT COUNT(*)
+                    FROM participation p
+                    JOIN chat_captures c ON c.capture_id = p.capture_id
+                    JOIN chat_targets t ON t.latest_capture_id = c.capture_id
+                    WHERE t.replay_status = 'captured'
                 """,
                 (normalized_channel_id,),
             ).fetchone()[0]
@@ -787,21 +799,22 @@ def list_channel_chat_videos(
                 "participatedAt": str(row["participated_at"] or ""),
             }
             for row in conn.execute(
-                """
-                SELECT t.video_id,
-                       COUNT(*) AS message_count,
-                       MIN(a.video_offset_ms) AS first_offset_ms,
-                       MAX(a.video_offset_ms) AS last_offset_ms,
-                       COALESCE(c.broadcast_ended_at, c.completed_at) AS participated_at
-                FROM chat_targets t
-                JOIN chat_captures c ON c.capture_id = t.latest_capture_id
-                JOIN chat_actions a ON a.capture_id = c.capture_id
-                WHERE t.replay_status = 'captured'
-                  AND a.is_message = 1
-                  AND a.author_channel_id = ?
-                GROUP BY t.video_id, c.broadcast_ended_at, c.completed_at
-                ORDER BY participated_at DESC, t.video_id
-                LIMIT ? OFFSET ?
+                _CHANNEL_CHAT_PARTICIPATION_CTE
+                + """
+                    SELECT t.video_id,
+                           p.message_count,
+                           p.first_offset_ms,
+                           p.last_offset_ms,
+                           COALESCE(
+                               c.broadcast_ended_at,
+                               c.completed_at
+                           ) AS participated_at
+                    FROM participation p
+                    JOIN chat_captures c ON c.capture_id = p.capture_id
+                    JOIN chat_targets t ON t.latest_capture_id = c.capture_id
+                    WHERE t.replay_status = 'captured'
+                    ORDER BY participated_at DESC, t.video_id
+                    LIMIT ? OFFSET ?
                 """,
                 (normalized_channel_id, limit, offset),
             )

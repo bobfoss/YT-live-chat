@@ -8,6 +8,7 @@ from pathlib import Path
 from yt_live_chat.database import (
     INTEGRATION_CONTRACT_VERSION,
     SCHEMA_VERSION,
+    _CHANNEL_CHAT_PARTICIPATION_CTE,
     connect,
     database_status,
     initialize_database,
@@ -519,6 +520,24 @@ class DatabaseTests(unittest.TestCase):
                 list_channel_chat_videos(database, "UCauthor1", limit=501)
             with self.assertRaisesRegex(ValueError, "nonnegative"):
                 list_channel_chat_videos(database, "UCauthor1", offset=-1)
+
+            conn = connect(database, read_only=True)
+            try:
+                plan = conn.execute(
+                    "EXPLAIN QUERY PLAN "
+                    + _CHANNEL_CHAT_PARTICIPATION_CTE
+                    + " SELECT capture_id FROM participation",
+                    ("UCauthor1",),
+                ).fetchall()
+            finally:
+                conn.close()
+            self.assertTrue(
+                any(
+                    "idx_chat_actions_author_channel" in str(row[3])
+                    for row in plan
+                ),
+                [str(row[3]) for row in plan],
+            )
 
 
 if __name__ == "__main__":

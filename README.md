@@ -23,7 +23,9 @@ player.
 
 Channel detail pages also receive a **Chat history** tab. It lists canonical
 YTL videos whose latest captured chat contains messages from that channel,
-ordered by the recorded broadcast end time.
+ordered by the recorded broadcast end time. Channel history queries begin with
+the indexed author rows, so unrelated actions in large captured chats are not
+scanned to calculate the tab count or video page.
 
 ## Install for local development
 
