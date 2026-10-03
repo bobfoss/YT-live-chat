@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "live_chat",
+  "plugin_api_version": 2,
+  "browser_api_version": 2,
+  "required_host_features": [
+    "library_video_lookup_v1",
+    "youtube_ytdlp_v1"
+  ],
+  "config_template": {}
+}

@@ -18,7 +18,7 @@ live_chat = "yt_live_chat.plugin:create_plugin"
 include = ["yt_live_chat*"]
 
 [tool.setuptools.package-data]
-yt_live_chat = ["browser.css", "browser.js", "schema.sql"]
+yt_live_chat = ["browser.css", "browser.js", "schema.sql", "ytl-plugin.json"]
 
 [tool.ruff]
 target-version = "py311"
