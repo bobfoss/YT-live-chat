@@ -1,5 +1,10 @@
 # YT Live Chat
 
+Licensed under the GNU General Public License, version 3 or (at your option)
+any later version (`GPL-3.0-or-later`). See [LICENSE](LICENSE). Distributed
+without any warranty; see the license for details. Third-party dependencies
+retain their own licenses.
+
 YT Live Chat is an optional sidecar plugin for YT Library. The informal project
 name is **YTLC**.
 
