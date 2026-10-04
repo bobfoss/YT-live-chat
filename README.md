@@ -26,6 +26,12 @@ captured `@handle` in the local URL, when the captured author channel ID is
 present in the library. The viewer does not yet synchronize with an embedded
 player.
 
+Message authors use locally cached channel profile thumbnails, with round
+initial-letter placeholders for unknown channels or missing/broken images.
+Chat cards also show the uploader's cached profile thumbnail beside the title.
+The same author presentation is used in the detail viewer, Meta collection,
+and global search. No new profile images are fetched from YouTube.
+
 Channel detail pages also receive a **Chat history** tab. It lists canonical
 YTL videos whose latest captured chat contains messages from that channel,
 ordered by the recorded broadcast end time. Channel history queries begin with

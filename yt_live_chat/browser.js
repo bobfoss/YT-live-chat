@@ -76,6 +76,25 @@
     }
   }
 
+  function profileThumbnail(thumbnailPath, name, extraClass = '') {
+    const avatar = document.createElement('span');
+    avatar.className = `ytlc-avatar ${extraClass}`.trim();
+    avatar.setAttribute('aria-hidden', 'true');
+    const initial = (Array.from(String(name || '').trim().replace(/^@/, ''))[0] || '?').toUpperCase();
+    avatar.textContent = initial;
+    const path = String(thumbnailPath || '').trim().replace(/\\/g, '/');
+    if (path && !/^(?:[a-z][a-z0-9+.-]*:|\/{2})/i.test(path)) {
+      const image = document.createElement('img');
+      image.alt = '';
+      image.loading = 'lazy';
+      image.decoding = 'async';
+      image.addEventListener('error', () => { avatar.textContent = initial; }, { once: true });
+      image.src = `/${path.replace(/^\/+/, '')}`;
+      avatar.replaceChildren(image);
+    }
+    return avatar;
+  }
+
   function messageRow(videoId, message, authorChannels, host, highlight = false) {
     const row = document.createElement('div');
     row.className = 'ytlc-message';
@@ -94,6 +113,7 @@
     const body = document.createElement('div');
     body.className = 'ytlc-message-body';
     const authorChannelId = String(message.authorChannelId || '');
+    const profile = authorChannels.get(authorChannelId);
     const linked = authorChannelId
       && authorChannels.has(authorChannelId)
       && typeof host.ui?.localChannelHref === 'function';
@@ -119,7 +139,7 @@
       text.textContent = String(message.messageText || '');
     }
     body.append(author, text);
-    row.append(timestamp, body);
+    row.append(timestamp, profileThumbnail(profile?.thumbnail_path, message.authorName), body);
     return row;
   }
 
@@ -408,7 +428,10 @@
       resolveAuthorChannels(items.flatMap(item => item.messages || []), host),
     ]);
     for (const item of items) {
-      item.title = videos.get(item.video_id)?.title || item.title || '';
+      const video = videos.get(item.video_id);
+      item.title = video?.title || item.title || '';
+      item.channelThumbnailPath = video?.metadata_channel_thumbnail_path || '';
+      item.channelName = video?.metadata_channel_name || '';
       item.authorChannels = authors;
     }
   }
@@ -423,9 +446,12 @@
     kind.className = 'result-kind';
     kind.textContent = 'Live chat';
     const title = document.createElement('a');
-    title.className = 'video-title';
+    title.className = 'video-title creator-chip';
     title.href = host.ui.localVideoHref(item.video_id);
-    title.textContent = item.title || item.video_id;
+    const titleText = document.createElement('span');
+    titleText.className = 'creator-name';
+    titleText.textContent = item.title || item.video_id;
+    title.append(profileThumbnail(item.channelThumbnailPath, item.channelName, 'ytlc-title-avatar'), titleText);
     const summary = document.createElement('div');
     summary.className = 'details';
     summary.textContent = [

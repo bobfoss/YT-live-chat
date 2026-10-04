@@ -15,9 +15,10 @@ const styles = fs.readFileSync(
   'utf8',
 );
 
-function registeredPlugin() {
+function registeredPlugin(globals = {}) {
   let plugin = null;
   const context = {
+    ...globals,
     window: {
       YTLibraryBrowserPlugins: {
         apiVersion: 2,
@@ -30,6 +31,48 @@ function registeredPlugin() {
   };
   vm.runInNewContext(source, context, { filename: 'browser.js' });
   return plugin;
+}
+
+class TestElement {
+  constructor(tagName) {
+    this.tagName = tagName;
+    this.className = '';
+    this.children = [];
+    this.dataset = {};
+    this.attributes = {};
+    this.listeners = {};
+    this.value = '';
+  }
+
+  set textContent(value) {
+    this.value = String(value);
+    this.children = [];
+  }
+
+  get textContent() {
+    return this.value + this.children.map(child => child.textContent).join('');
+  }
+
+  append(...children) { this.children.push(...children); }
+  replaceChildren(...children) { this.value = ''; this.children = children; }
+  setAttribute(name, value) { this.attributes[name] = value; }
+  addEventListener(name, listener) { this.listeners[name] = listener; }
+}
+
+function descendants(element, className) {
+  return [element, ...element.children.flatMap(child => descendants(child, className))]
+    .filter(child => child.className.split(' ').includes(className));
+}
+
+function renderChat(item) {
+  const plugin = registeredPlugin({ document: { createElement: name => new TestElement(name) } });
+  return plugin.search.renderResult({ video_id: 'abcdefghijk', ...item }, {
+    ui: {
+      localVideoHref: id => `/videos/${id}`,
+      localChannelHref: id => `/channels/${id}`,
+      formatTime: value => value || '',
+    },
+  });
 }
 
 test('browser asset registers recorded-chat card and detail extensions', () => {
@@ -165,10 +208,89 @@ test('search preparation batches only selected video cards and captured authors'
   const items = [{video_id: 'abcdefghijk', messages: [{authorChannelId: 'UCauthor'}]},
     {video_id: 'lmnopqrstuv', messages: [{authorChannelId: 'UCauthor'}]}];
   await plugin.search.prepareResults(items, {
-    libraryVideos: async ids => { calls.push([...ids]); return new Map([['abcdefghijk', {title: 'Canonical title'}]]); },
+    libraryVideos: async ids => { calls.push([...ids]); return new Map([['abcdefghijk', {
+      title: 'Canonical title', metadata_channel_thumbnail_path: 'thumbs/creator.jpg',
+      metadata_channel_name: 'Creator',
+    }]]); },
     libraryChannels: async ids => { calls.push([...ids]); return new Map([['UCauthor', {}]]); },
   });
   assert.deepEqual(calls, [['abcdefghijk', 'lmnopqrstuv'], ['UCauthor']]);
   assert.equal(items[0].title, 'Canonical title');
+  assert.equal(items[0].channelThumbnailPath, 'thumbs/creator.jpg');
+  assert.equal(items[0].channelName, 'Creator');
+  assert.equal(items[1].channelThumbnailPath, '');
+  assert.equal(items[1].channelName, '');
   assert.ok(items[0].authorChannels.has('UCauthor'));
+});
+
+test('chat cards use cached author and uploader thumbnails without changing links', () => {
+  const card = renderChat({
+    title: 'Captured video', channelName: 'Creator', channelThumbnailPath: '/thumbs/creator.jpg',
+    authorChannels: new Map([['UCauthor', {thumbnail_path: 'thumbs/author.jpg'}]]),
+    messages: [{authorChannelId: 'UCauthor', authorName: '@Known', offsetMs: 125000,
+      messageText: 'Hello from chat'}],
+  });
+  const [avatar] = descendants(card, 'ytlc-message').flatMap(row => descendants(row, 'ytlc-avatar'));
+  assert.equal(avatar.attributes['aria-hidden'], 'true');
+  assert.equal(avatar.children[0].tagName, 'img');
+  assert.equal(avatar.children[0].src, '/thumbs/author.jpg');
+  assert.equal(avatar.children[0].alt, '');
+  assert.equal(avatar.children[0].loading, 'lazy');
+  assert.equal(avatar.children[0].decoding, 'async');
+  const author = descendants(card, 'ytlc-message-author')[0];
+  assert.equal(author.tagName, 'a');
+  assert.equal(author.textContent, '@Known');
+  assert.equal(author.href, '/channels/@Known');
+  assert.equal(descendants(card, 'ytlc-message-time')[0].href,
+    'https://www.youtube.com/watch?v=abcdefghijk&t=125s');
+  assert.equal(descendants(card, 'ytlc-message-text')[0].textContent, 'Hello from chat');
+  const title = descendants(card, 'video-title')[0];
+  assert.equal(title.href, '/videos/abcdefghijk');
+  assert.equal(descendants(title, 'creator-name')[0].textContent, 'Captured video');
+  assert.equal(descendants(title, 'ytlc-title-avatar')[0].children[0].src, '/thumbs/creator.jpg');
+});
+
+test('unknown, missing-image and unnamed authors get initial placeholders', () => {
+  const card = renderChat({
+    authorChannels: new Map([['UCknown', {}]]),
+    messages: [
+      {authorChannelId: 'UCunknown', authorName: '@unknown'},
+      {authorChannelId: 'UCknown', authorName: '@Known'},
+      {authorName: ''},
+      {authorName: '@😀friend'},
+    ],
+  });
+  const rows = descendants(card, 'ytlc-message');
+  assert.deepEqual(rows.map(row => descendants(row, 'ytlc-avatar')[0].textContent), ['U', 'K', '?', '😀']);
+  assert.ok(rows.every(row => descendants(row, 'ytlc-avatar')[0].children.length === 0));
+  assert.deepEqual(rows.map(row => descendants(row, 'ytlc-message-author')[0].tagName),
+    ['strong', 'a', 'strong', 'strong']);
+  assert.equal(descendants(card, 'ytlc-title-avatar')[0].textContent, '?');
+});
+
+test('broken cached images fall back and remote thumbnail URLs are not loaded', () => {
+  const card = renderChat({
+    channelName: 'Uploader', channelThumbnailPath: 'thumbs/missing.jpg',
+    authorChannels: new Map([
+      ['UCbroken', {thumbnail_path: 'thumbs/missing.jpg'}],
+      ['UCremote', {thumbnail_path: 'https://example.org/avatar.jpg'}],
+      ['UCrelative', {thumbnail_path: '//example.org/avatar.jpg'}],
+      ['UCwindows', {thumbnail_path: '\\\\example.org\\avatar.jpg'}],
+      ['UCpadded', {thumbnail_path: ' https://example.org/avatar.jpg '}],
+    ]),
+    messages: [
+      {authorChannelId: 'UCbroken', authorName: '@Broken'},
+      {authorChannelId: 'UCremote', authorName: '@Remote'},
+      {authorChannelId: 'UCrelative', authorName: '@Relative'},
+      {authorChannelId: 'UCwindows', authorName: '@Windows'},
+      {authorChannelId: 'UCpadded', authorName: '@Padded'},
+    ],
+  });
+  const avatars = descendants(card, 'ytlc-avatar');
+  assert.equal(avatars[0].children.length, 1);
+  assert.equal(avatars[1].children.length, 1);
+  avatars[0].children[0].listeners.error();
+  avatars[1].children[0].listeners.error();
+  assert.deepEqual(avatars.map(avatar => avatar.textContent), ['U', 'B', 'R', 'R', 'W', 'P']);
+  assert.ok(avatars.every(avatar => avatar.children.length === 0));
 });
