@@ -402,8 +402,96 @@
     }]
     : [];
 
+  async function prepareSearchResults(items, host) {
+    const [videos, authors] = await Promise.all([
+      host.libraryVideos([...new Set(items.map(item => item.video_id))]),
+      resolveAuthorChannels(items.flatMap(item => item.messages || []), host),
+    ]);
+    for (const item of items) {
+      item.title = videos.get(item.video_id)?.title || item.title || '';
+      item.authorChannels = authors;
+    }
+  }
+
+  function chatCard(item, host) {
+    const card = document.createElement('article');
+    card.className = 'card ytlc-search-card';
+    card.dataset.chatVideoId = item.video_id;
+    const body = document.createElement('div');
+    body.className = 'body';
+    const kind = document.createElement('div');
+    kind.className = 'result-kind';
+    kind.textContent = 'Live chat';
+    const title = document.createElement('a');
+    title.className = 'video-title';
+    title.href = host.ui.localVideoHref(item.video_id);
+    title.textContent = item.title || item.video_id;
+    const summary = document.createElement('div');
+    summary.className = 'details';
+    summary.textContent = [
+      formatCount(item.message_count, 'message'),
+      formatCount(item.author_count, 'author'),
+    ].join(' · ');
+    const date = document.createElement('div');
+    date.className = 'details';
+    const dateValue = item.broadcast_ended_at || item.broadcast_started_at || item.completed_at;
+    const dateLabel = item.broadcast_ended_at ? 'Broadcast ended'
+      : item.broadcast_started_at ? 'Broadcast started' : 'Captured';
+    date.textContent = `${dateLabel} ${host.ui.formatTime(dateValue)}`;
+    body.append(kind, title, summary, date);
+    const preview = document.createElement('div');
+    preview.className = 'ytlc-search-preview';
+    preview.append(...(item.messages || []).map(message => messageRow(
+      item.video_id, message, item.authorChannels || new Map(), host, Boolean(item.query),
+    )));
+    body.append(preview);
+    if (item.query) {
+      const label = document.createElement('div');
+      label.className = 'details';
+      label.textContent = 'Matching message excerpts';
+      body.append(label);
+    }
+    if (item.status === 'partial') {
+      const partial = document.createElement('div');
+      partial.className = 'details';
+      partial.textContent = 'Partial capture';
+      body.append(partial);
+    }
+    card.append(body);
+    return card;
+  }
+
   browserApi.register({
     id: 'live_chat',
+    collection: {
+      sorts: ['newest', 'oldest'],
+      fetch: ({ query, limit, offset, sort, filters = {} }, host) => host.requestJson(
+        'collection', { q: query, limit, offset, sort,
+          own: filters.own === false ? '0' : '1', others: filters.others === false ? '0' : '1' },
+      ),
+    },
+    search: {
+      capability: 'video_live_chat_search',
+      label: 'Live chats',
+      serverResults: true,
+      filters: [
+        { key: 'own', label: 'own', hashParam: 'live-chat-own', disabledPreferenceKey: 'plugins.live_chat.filters.hide_own' },
+        { key: 'others', label: 'others', hashParam: 'live-chat-others', disabledPreferenceKey: 'plugins.live_chat.filters.hide_others' },
+      ],
+      searchField: {
+        key: 'live_chat', label: 'Live chats', defaultEnabled: true,
+        appliesToKinds: ['videos'],
+      },
+      videoFacet: {
+        presentLabel: 'live chats', absentLabel: 'no live chats',
+        presentHashParam: 'with-live-chats', absentHashParam: 'without-live-chats',
+        presentDisabledPreferenceKey: 'plugins.live_chat.filters.hide_present',
+        absentDisabledPreferenceKey: 'plugins.live_chat.filters.hide_absent',
+      },
+      catalogCount: status => Number(status?.pluginStatus?.searchCatalogCount || 0),
+      prepareResults: prepareSearchResults,
+      renderResult: chatCard,
+    },
     channelVideoTabs,
     entityCards: {
       capability: 'video_live_chat_availability',

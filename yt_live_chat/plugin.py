@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 from typing import Any
 import urllib.parse
 
-from . import __version__
+from . import __version__, search
 from .acquisition import download_recorded_chat
 from .config import config_path, ensure_config_file, load_config
 from .database import (
@@ -85,8 +85,14 @@ class YTLiveChatPlugin:
     plugin_version = __version__
     plugin_api_version = 2
     required_host_features = frozenset(
-        {"library_video_lookup_v1", "youtube_ytdlp_v1"}
+        {
+            "library_video_lookup_v1", "youtube_ytdlp_v1",
+            "browser_collections_v1", "unified_search_cards_v1",
+            "plugin_search_filters_v1", "youtube_account_identity_v1",
+        }
     )
+    browser_collection = {"label": "Live chats"}
+    search_filter_keys = frozenset({"own", "others"})
     capabilities = frozenset(
         {
             "video_live_chat_availability",
@@ -104,6 +110,8 @@ class YTLiveChatPlugin:
     def __init__(self) -> None:
         self._database_path: Path | None = None
         self._config: dict[str, Any] = {}
+        self._library_videos: Callable[[Iterable[str]], Iterable[dict[str, Any]]] = lambda ids: ()
+        self._account_identity: Callable[[], dict[str, str]] | None = None
 
     def start(self, context: Any) -> None:
         configured_path = str(context.plugin_config.get("config") or "").strip()
@@ -120,6 +128,8 @@ class YTLiveChatPlugin:
             )
         self._config = own_config
         self._database_path = database_path
+        self._library_videos = context.library_videos
+        self._account_identity = context.youtube_account_identity
 
     def worker_processes(self) -> tuple[dict[str, Any], ...]:
         try:
@@ -327,6 +337,7 @@ class YTLiveChatPlugin:
             "database": status,
         }
         if state == "ready":
+            plugin_status["searchCatalogCount"] = search.catalog_count(self._database_path)
             plugin_status["adminMetrics"] = [
                 {
                     "id": "captured-videos",
@@ -382,6 +393,36 @@ class YTLiveChatPlugin:
             ]
         return plugin_status
 
+    def _authors(self, filters: dict[str, bool] | None) -> tuple[bool, bool, str]:
+        filters = filters or {}
+        if any(key not in self.search_filter_keys or type(value) is not bool for key, value in filters.items()):
+            raise ValueError("Chat author filters must be own/others booleans")
+        own, others = filters.get("own", True), filters.get("others", True)
+        if own == others:
+            return own, others, ""
+        if self._account_identity is None:
+            raise RuntimeError("YouTube account identity is unavailable")
+        return own, others, self._account_identity()["channel_id"]
+
+    def filter_videos(self, query: str, *, filters: dict[str, bool] | None = None) -> dict[str, frozenset[str]]:
+        if self._database_path is None:
+            return {"video_ids": frozenset(), "search_match_ids": frozenset()}
+        return search.filter_videos(self._database_path, query, self._authors(filters) if query.strip() else search.ALL_AUTHORS)
+
+    def search_result_descriptors(self, query: str, *, filters: dict[str, bool] | None = None) -> list[dict[str, Any]]:
+        if self._database_path is None:
+            return []
+        if not query.strip():
+            return []
+        return search.descriptors(self._database_path, query, self._library_videos, authors=self._authors(filters))
+
+    def hydrate_search_results(
+        self, ids: list[str], query: str, *, filters: dict[str, bool] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        if self._database_path is None:
+            return {}
+        return search.hydrate(self._database_path, ids, query, self._authors(filters))
+
     def handle_api(
         self,
         method: str,
@@ -390,6 +431,27 @@ class YTLiveChatPlugin:
     ) -> tuple[int, Any] | None:
         if method == "GET" and path == "status":
             return 200, self.status()
+        if method == "GET" and path == "collection":
+            if self._database_path is None:
+                return 503, {"error": "YT Live Chat is not ready"}
+            try:
+                filters = {}
+                for key in self.search_filter_keys:
+                    value = (query.get(key) or ["1"])[0]
+                    if value not in {"0", "1"}:
+                        raise ValueError("Chat author filters must be 0 or 1")
+                    filters[key] = value == "1"
+                return 200, search.collection(
+                    self._database_path, (query.get("q") or [""])[0],
+                    int((query.get("limit") or ["100"])[0]),
+                    int((query.get("offset") or ["0"])[0]),
+                    (query.get("sort") or ["newest"])[0], self._library_videos,
+                    self._authors(filters),
+                )
+            except ValueError as exc:
+                return 400, {"error": str(exc)}
+            except RuntimeError as exc:
+                return 503, {"error": str(exc)}
         if method == "GET" and path == "videos":
             if self._database_path is None:
                 return 503, {"error": "YT Live Chat is not ready"}
@@ -471,6 +533,8 @@ class YTLiveChatPlugin:
     def shutdown(self) -> None:
         self._database_path = None
         self._config = {}
+        self._library_videos = lambda ids: ()
+        self._account_identity = None
 
 
 def create_plugin() -> YTLiveChatPlugin:

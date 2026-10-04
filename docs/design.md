@@ -86,8 +86,27 @@ The browser integration is plugin-owned. It uses YT Library's generic
 per availability request, and retrieves at most 500 user messages per API page.
 The viewer requests 100-message pages near the end of its resizable scroll
 viewport. A plugin-owned FTS5 index supplies capture-scoped prefix search with
-bounded pages and safe host-rendered match highlighting. YTLC does not register
-an omni-search provider, field, filter, preset, or result presentation.
+bounded pages and safe host-rendered match highlighting. YTLC also registers
+global search through `unified_search_cards_v1` and Meta → Live chats through
+`browser_collections_v1`. Core owns the shared Meta placement and requires the
+global-search registration for collection visibility. No dependency on YTC is
+introduced. Blank collections browse current captures; global cards require a
+nonblank message-text match. All authors are eligible. Each stable `chat:<video-id>`
+card represents the current capture and hydrates only the selected page's three
+message excerpts. Newest/oldest use broadcast end/start, respectively, then the
+other broadcast endpoint, then capture completion time. Like counts are null.
+YTL supplies canonical titles through its bounded video lookup. Chat queries,
+presence, prefix matching, and bounded revision-keyed match caching stay in YTLC.
+
+The additive `plugin_search_filters_v1` contract forwards `own`/`others`
+booleans consistently to matching, collection browsing, and selected-page
+hydration. Both default on, preserving all-author search. Selective author
+queries use the host's `youtube_account_identity_v1` service; the plugin
+receives only the cookie account's channel ID and observation timestamp, never
+cookies. Ownership is evaluated dynamically against stored author channel IDs;
+there is no capture-time ownership flag or migration. Match-cache keys include
+the selected author groups and verified account ID. Presence facets still mean
+captured chat regardless of author choices.
 
 YTLC advertises the `channel_live_chat_history` capability and contributes a
 browser `channelVideoTabs` entry. Its count and page requests query only the

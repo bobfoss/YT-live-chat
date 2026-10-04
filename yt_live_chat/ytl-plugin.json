@@ -4,7 +4,11 @@
   "plugin_api_version": 2,
   "browser_api_version": 2,
   "required_host_features": [
+    "browser_collections_v1",
     "library_video_lookup_v1",
+    "plugin_search_filters_v1",
+    "unified_search_cards_v1",
+    "youtube_account_identity_v1",
     "youtube_ytdlp_v1"
   ],
   "config_template": {}

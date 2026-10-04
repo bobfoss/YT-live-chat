@@ -41,7 +41,7 @@ test('browser asset registers recorded-chat card and detail extensions', () => {
     'video_live_chat_availability',
   );
   assert.equal(plugin.videoDetail.capability, 'video_live_chat_messages');
-  assert.equal(plugin.search, undefined);
+  assert.equal(plugin.search.serverResults, true);
   assert.equal(plugin.channelVideoTabs[0].label, 'Chat history');
   assert.equal(
     plugin.channelVideoTabs[0].capability,
@@ -135,4 +135,40 @@ test('video detail omits the panel when chat is not captured', async () => {
     }),
   });
   assert.equal(panel, null);
+});
+
+test('collection fetch preserves blank query and delegates shared sort and page', async () => {
+  const plugin = registeredPlugin();
+  const calls = [];
+  const payload = {total: 12, totalIsExact: true, limit: 5, offset: 5, results: []};
+  const host = {requestJson: async (...args) => { calls.push(args); return payload; }};
+  assert.equal(await plugin.collection.fetch({query: '', limit: 5, offset: 5, sort: 'oldest'}, host), payload);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    ['collection', {q: '', limit: 5, offset: 5, sort: 'oldest', own: '1', others: '1'}],
+  ]);
+  assert.deepEqual([...plugin.collection.sorts], ['newest', 'oldest']);
+  assert.equal(plugin.search.fetch, undefined);
+  assert.equal(plugin.search.searchField.key, 'live_chat');
+  assert.deepEqual([...plugin.search.searchField.appliesToKinds], ['videos']);
+  assert.equal(plugin.search.videoFacet.presentHashParam, 'with-live-chats');
+  assert.equal(plugin.search.videoFacet.absentDisabledPreferenceKey, 'plugins.live_chat.filters.hide_absent');
+  assert.equal(plugin.search.catalogCount({pluginStatus: {searchCatalogCount: 12}}), 12);
+  await plugin.collection.fetch({query: 'hi', limit: 5, offset: 0, sort: 'newest', filters: {others: false}}, host);
+  assert.equal(calls.at(-1)[1].own, '1');
+  assert.equal(calls.at(-1)[1].others, '0');
+  assert.deepEqual(Array.from(plugin.search.filters, option => option.key), ['own', 'others']);
+});
+
+test('search preparation batches only selected video cards and captured authors', async () => {
+  const plugin = registeredPlugin();
+  const calls = [];
+  const items = [{video_id: 'abcdefghijk', messages: [{authorChannelId: 'UCauthor'}]},
+    {video_id: 'lmnopqrstuv', messages: [{authorChannelId: 'UCauthor'}]}];
+  await plugin.search.prepareResults(items, {
+    libraryVideos: async ids => { calls.push([...ids]); return new Map([['abcdefghijk', {title: 'Canonical title'}]]); },
+    libraryChannels: async ids => { calls.push([...ids]); return new Map([['UCauthor', {}]]); },
+  });
+  assert.deepEqual(calls, [['abcdefghijk', 'lmnopqrstuv'], ['UCauthor']]);
+  assert.equal(items[0].title, 'Canonical title');
+  assert.ok(items[0].authorChannels.has('UCauthor'));
 });

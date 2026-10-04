@@ -23,6 +23,9 @@ class FakeContext:
     def library_videos(self, video_ids):
         return ()
 
+    def youtube_account_identity(self):
+        return {"channel_id": "UCauthor1"}
+
 
 class FakePlanningContext:
     def __init__(self, videos) -> None:
@@ -81,7 +84,8 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(plugin.plugin_api_version, 2)
             self.assertEqual(
                 plugin.required_host_features,
-                {"library_video_lookup_v1", "youtube_ytdlp_v1"},
+                {"library_video_lookup_v1", "youtube_ytdlp_v1", "browser_collections_v1", "unified_search_cards_v1",
+                 "plugin_search_filters_v1", "youtube_account_identity_v1"},
             )
             self.assertEqual(
                 plugin.capabilities,

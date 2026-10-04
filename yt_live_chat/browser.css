@@ -27,6 +27,9 @@ a.ytlc-message-author { color: var(--accent); text-decoration: none; }
 a.ytlc-message-author:hover { text-decoration: underline; }
 .ytlc-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ytlc-message-loading { padding: 10px 0 2px; color: var(--muted); font-size: 12px; text-align: center; }
+.ytlc-search-card { min-width: 0; }
+.ytlc-search-preview { margin-top: 8px; }
+.ytlc-search-preview .ytlc-message-body { grid-template-columns: 1fr; gap: 2px; }
 
 @media (max-width: 760px) {
   .ytlc-panel-heading { display: grid; }
