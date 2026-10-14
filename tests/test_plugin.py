@@ -85,7 +85,7 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(
                 plugin.required_host_features,
                 {"library_video_lookup_v1", "youtube_ytdlp_v1", "browser_collections_v1", "unified_search_cards_v1",
-                 "plugin_search_filters_v1", "youtube_account_identity_v1"},
+                 "plugin_search_filters_v1", "youtube_account_identity_v1", "partial_video_search_v1"},
             )
             self.assertEqual(
                 plugin.capabilities,

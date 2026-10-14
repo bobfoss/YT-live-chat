@@ -62,6 +62,17 @@ ID are shown with both boxes checked but omitted by a single-group filter.
 Choices persist in YTL preferences and shareable URLs. Capture-presence facets,
 video-detail chat search, and channel Chat history retain their existing scope.
 
+If account verification is unavailable, Own-only and Others-only message
+matching fail closed: global search omits that chat contribution and clearly
+marks results/counts incomplete while native search and local capture-presence
+filters continue. The dedicated Live chats collection reports the failure
+instead of showing unfiltered chats. Query and controls remain available;
+restore the cookie/proxy and use Refresh after the host's one-minute failure
+backoff. Explicitly selecting both checkboxes searches all authors offline,
+and selecting neither needs no account lookup. No stale identity is reused
+after expiry, cookie/account changes, or a failed refresh. This requires the
+host's additive `partial_video_search_v1` feature; no schema migration is needed.
+
 ## Install for local development
 
 From this repository:

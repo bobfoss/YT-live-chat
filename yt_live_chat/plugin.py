@@ -88,6 +88,7 @@ class YTLiveChatPlugin:
         {
             "library_video_lookup_v1", "youtube_ytdlp_v1",
             "browser_collections_v1", "unified_search_cards_v1",
+            "partial_video_search_v1",
             "plugin_search_filters_v1", "youtube_account_identity_v1",
         }
     )
@@ -400,14 +401,30 @@ class YTLiveChatPlugin:
         own, others = filters.get("own", True), filters.get("others", True)
         if own == others:
             return own, others, ""
-        if self._account_identity is None:
-            raise RuntimeError("YouTube account identity is unavailable")
-        return own, others, self._account_identity()["channel_id"]
+        try:
+            identity = self._account_identity() if self._account_identity else {}
+            channel_id = identity.get("channel_id")
+            if not isinstance(channel_id, str) or not channel_id.strip():
+                raise RuntimeError("Account channel is unknown")
+        except Exception:
+            selection = "Own-only" if own else "Others-only"
+            raise RuntimeError(
+                f"{selection} live chat matches are unavailable because the YouTube account "
+                "could not be verified. Check the configured cookie and proxy, then retry "
+                "after one minute. Both Own and Others can be enabled to search all captured "
+                "messages without account verification."
+            ) from None
+        return own, others, channel_id
 
-    def filter_videos(self, query: str, *, filters: dict[str, bool] | None = None) -> dict[str, frozenset[str]]:
+    def filter_videos(self, query: str, *, filters: dict[str, bool] | None = None) -> dict[str, Any]:
         if self._database_path is None:
             return {"video_ids": frozenset(), "search_match_ids": frozenset()}
-        return search.filter_videos(self._database_path, query, self._authors(filters) if query.strip() else search.ALL_AUTHORS)
+        try:
+            authors = self._authors(filters) if query.strip() else search.ALL_AUTHORS
+        except RuntimeError as exc:
+            # Presence is local and independent of account-specific message matching.
+            return {**search.filter_videos(self._database_path, ""), "search_error": str(exc)}
+        return search.filter_videos(self._database_path, query, authors)
 
     def search_result_descriptors(self, query: str, *, filters: dict[str, bool] | None = None) -> list[dict[str, Any]]:
         if self._database_path is None:

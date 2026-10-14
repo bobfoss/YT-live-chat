@@ -158,6 +158,52 @@ class SearchTests(unittest.TestCase):
             self.plugin.search_result_descriptors("morn", filters=own)
         self.assertEqual(self.plugin.handle_api("GET", "collection", {"others": ["false"]})[0], 400)
 
+    def test_identity_failure_preserves_presence_but_never_broadens_author_matching(self):
+        identity = self.plugin._account_identity = Mock(side_effect=RuntimeError("private transport detail"))
+        for filters, label in (({"own": True, "others": False}, "Own-only"),
+                               ({"own": False, "others": True}, "Others-only")):
+            with self.subTest(filters=filters):
+                data = self.plugin.filter_videos("morn", filters=filters)
+                self.assertEqual(data["video_ids"], {"abcdefghijk", "lmnopqrstuv"})
+                self.assertEqual(data["search_match_ids"], set())
+                self.assertIn(label, data["search_error"])
+                self.assertNotIn("private transport detail", data["search_error"])
+                for action in (
+                    lambda: self.plugin.search_result_descriptors("morn", filters=filters),
+                    lambda: self.plugin.hydrate_search_results(["chat:abcdefghijk"], "morn", filters=filters),
+                ):
+                    with self.assertRaisesRegex(RuntimeError, label):
+                        action()
+                code, payload = self.plugin.handle_api("GET", "collection", {
+                    "q": ["morn"], **{key: [str(int(value))] for key, value in filters.items()},
+                })
+                self.assertEqual(code, 503)
+                self.assertIn(label, payload["error"])
+        identity.reset_mock()
+        for enabled, expected in ((True, 2), (False, 0)):
+            filters = {"own": enabled, "others": enabled}
+            self.assertEqual(len(self.plugin.filter_videos("morn", filters=filters)["search_match_ids"]), expected)
+            self.assertEqual(len(self.plugin.search_result_descriptors("morn", filters=filters)), expected)
+            self.assertEqual(self.collection(own=int(enabled), others=int(enabled))["total"], expected)
+        identity.assert_not_called()
+        identity.side_effect = None
+        identity.return_value = {"channel_id": "UCauthor1"}
+        recovered = self.plugin.filter_videos("morn", filters={"others": False})
+        self.assertNotIn("search_error", recovered)
+        self.assertEqual(len(recovered["search_match_ids"]), 2)
+        self.assertEqual(len(self.plugin.search_result_descriptors("morn", filters={"others": False})), 2)
+        self.assertEqual(self.collection(q="morn", others=0)["total"], 2)
+
+    def test_empty_identity_is_unavailable_instead_of_becoming_an_author_filter(self):
+        for identity in ({}, {"channel_id": ""}, {"channel_id": None}):
+            self.plugin._account_identity = Mock(return_value=identity)
+            self.assertIn("search_error", self.plugin.filter_videos("morn", filters={"others": False}))
+        self.plugin._account_identity = Mock(side_effect=RuntimeError("offline"))
+        blank = self.plugin.filter_videos("", filters={"others": False})
+        self.assertNotIn("search_error", blank)
+        self.assertEqual(len(blank["video_ids"]), 2)
+        self.plugin._account_identity.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
